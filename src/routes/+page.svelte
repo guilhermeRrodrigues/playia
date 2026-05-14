@@ -1,47 +1,166 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
+
 	type Status = 'idle' | 'loading' | 'ok' | 'error';
 
-	let status: Status = $state('idle');
+	const BACKEND = 'http://127.0.0.1:8765';
+
+	// captura
+	let capStatus: Status = $state('idle');
 	let imgUrl: string | null = $state(null);
-	let errorMsg = $state('');
+	let capError = $state('');
+
+	// descrição (VLM)
+	let descStatus: Status = $state('idle');
+	let description: string | null = $state(null);
+	let descLatency = $state(0);
+	let descModel = $state('');
+	let descError = $state('');
+
+	// health do VLM
+	let vlmReady: boolean | null = $state(null);
+	let vlmModel = $state('');
+	let vlmIssue: string | null = $state(null);
+	let issueOpen = $state(false);
+
+	onMount(refreshVlmStatus);
+
+	async function refreshVlmStatus() {
+		try {
+			const res = await fetch(`${BACKEND}/vlm/status`);
+			if (!res.ok) {
+				vlmReady = false;
+				vlmIssue = `Backend respondeu HTTP ${res.status}`;
+				return;
+			}
+			const body = (await res.json()) as { ready: boolean; model: string; issue: string | null };
+			vlmReady = body.ready;
+			vlmModel = body.model;
+			vlmIssue = body.issue;
+		} catch (e) {
+			vlmReady = false;
+			vlmIssue = `Backend offline: ${e instanceof Error ? e.message : String(e)}`;
+		}
+	}
 
 	async function capture() {
-		status = 'loading';
-		errorMsg = '';
+		capStatus = 'loading';
+		capError = '';
 		try {
-			const res = await fetch('http://127.0.0.1:8765/capture', { method: 'POST' });
+			const res = await fetch(`${BACKEND}/capture`, { method: 'POST' });
 			if (!res.ok) {
-				errorMsg = `HTTP ${res.status}: ${await res.text()}`;
-				status = 'error';
+				capError = `HTTP ${res.status}: ${await res.text()}`;
+				capStatus = 'error';
 				return;
 			}
 			const blob = await res.blob();
 			if (imgUrl) URL.revokeObjectURL(imgUrl);
 			imgUrl = URL.createObjectURL(blob);
-			status = 'ok';
+			capStatus = 'ok';
 		} catch (e) {
-			errorMsg = e instanceof Error ? e.message : String(e);
-			status = 'error';
+			capError = e instanceof Error ? e.message : String(e);
+			capStatus = 'error';
+		}
+	}
+
+	function humanizeError(status: number, text: string): string {
+		if (status === 503) return 'Ollama não está rodando. Rode `ollama serve` em outro terminal.';
+		if (status === 404) return 'Modelo VLM não baixado. Rode `ollama pull qwen2.5vl:7b`.';
+		if (status === 504) return 'A IA demorou demais para responder (>60s). Tente de novo.';
+		// Tenta extrair detail do JSON do FastAPI.
+		try {
+			const j = JSON.parse(text);
+			if (j?.detail) return String(j.detail);
+		} catch {
+			// noop
+		}
+		return `HTTP ${status}: ${text}`;
+	}
+
+	async function describe() {
+		descStatus = 'loading';
+		descError = '';
+		try {
+			const res = await fetch(`${BACKEND}/describe`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: '{}'
+			});
+			const text = await res.text();
+			if (!res.ok) {
+				descError = humanizeError(res.status, text);
+				descStatus = 'error';
+				// Pode ter mudado o status do VLM (ex: daemon caiu).
+				refreshVlmStatus();
+				return;
+			}
+			const body = JSON.parse(text) as { description: string; latency_ms: number; model: string };
+			description = body.description;
+			descLatency = body.latency_ms;
+			descModel = body.model;
+			descStatus = 'ok';
+		} catch (e) {
+			descError = e instanceof Error ? e.message : String(e);
+			descStatus = 'error';
 		}
 	}
 </script>
 
 <main>
-	<h1>PlayIA — M1</h1>
-	<p class="subtitle">Hello world arquitetural: Tauri ↔ Python ↔ captura de tela.</p>
+	<header>
+		<h1>PlayIA — M2</h1>
+		<p class="subtitle">A IA enxerga a tela: Tauri ↔ Python ↔ Ollama (Qwen2.5-VL).</p>
+		{#if vlmReady === null}
+			<span class="badge badge-pending">VLM…</span>
+		{:else if vlmReady}
+			<span class="badge badge-ok">VLM pronto · {vlmModel}</span>
+		{:else}
+			<button
+				type="button"
+				class="badge badge-bad"
+				onclick={() => (issueOpen = !issueOpen)}
+				title="Clique para detalhes"
+			>
+				VLM indisponível {issueOpen ? '▾' : '▸'}
+			</button>
+			{#if issueOpen && vlmIssue}
+				<p class="issue">{vlmIssue}</p>
+			{/if}
+		{/if}
+	</header>
 
-	<button onclick={capture} disabled={status === 'loading'}>
-		{status === 'loading' ? 'Capturando…' : 'Capturar tela'}
-	</button>
+	<div class="actions">
+		<button onclick={capture} disabled={capStatus === 'loading'}>
+			{capStatus === 'loading' ? 'Capturando…' : 'Capturar tela'}
+		</button>
+		<button
+			onclick={describe}
+			disabled={descStatus === 'loading' || vlmReady === false}
+		>
+			{descStatus === 'loading' ? 'Pensando…' : 'Descrever tela'}
+		</button>
+	</div>
 
-	{#if status === 'error'}
-		<p class="error">Falhou: {errorMsg}</p>
+	{#if capStatus === 'error'}
+		<p class="error">Captura falhou: {capError}</p>
+	{/if}
+
+	{#if descStatus === 'error'}
+		<p class="error">Descrição falhou: {descError}</p>
 	{/if}
 
 	{#if imgUrl}
 		<figure>
 			<img src={imgUrl} alt="Screenshot capturado pelo sidecar" />
 		</figure>
+	{/if}
+
+	{#if description}
+		<section class="description">
+			<h2>Descrição</h2>
+			<p>{description}</p>
+			<small>latência: {descLatency}ms · {descModel}</small>
+		</section>
 	{/if}
 </main>
 
@@ -59,14 +178,73 @@
 		color: #1f2937;
 	}
 
+	header {
+		margin-bottom: 1.5rem;
+	}
+
 	h1 {
 		margin: 0 0 0.25rem;
 		font-size: 1.75rem;
 	}
 
+	h2 {
+		margin: 0 0 0.5rem;
+		font-size: 1.1rem;
+		color: #374151;
+	}
+
 	.subtitle {
-		margin: 0 0 1.5rem;
+		margin: 0 0 0.75rem;
 		color: #6b7280;
+	}
+
+	.badge {
+		display: inline-block;
+		padding: 0.2rem 0.6rem;
+		border-radius: 999px;
+		font-size: 0.8rem;
+		font-weight: 500;
+		border: 1px solid transparent;
+		line-height: 1.4;
+	}
+
+	.badge-ok {
+		background: #ecfdf5;
+		color: #065f46;
+		border-color: #6ee7b7;
+	}
+
+	.badge-bad {
+		background: #fef2f2;
+		color: #991b1b;
+		border-color: #fca5a5;
+		cursor: pointer;
+		font: inherit;
+		font-size: 0.8rem;
+		font-weight: 500;
+	}
+
+	.badge-pending {
+		background: #f3f4f6;
+		color: #6b7280;
+		border-color: #d1d5db;
+	}
+
+	.issue {
+		margin: 0.5rem 0 0;
+		padding: 0.5rem 0.75rem;
+		background: #fef2f2;
+		border: 1px solid #fecaca;
+		border-radius: 6px;
+		color: #7f1d1d;
+		font-size: 0.85rem;
+		white-space: pre-wrap;
+	}
+
+	.actions {
+		display: flex;
+		gap: 0.5rem;
+		flex-wrap: wrap;
 	}
 
 	button {
@@ -86,7 +264,7 @@
 
 	button:disabled {
 		opacity: 0.6;
-		cursor: progress;
+		cursor: not-allowed;
 	}
 
 	.error {
@@ -108,5 +286,24 @@
 		height: auto;
 		border: 1px solid #d1d5db;
 		border-radius: 6px;
+	}
+
+	.description {
+		margin-top: 1.5rem;
+		padding: 1rem 1.25rem;
+		background: #f9fafb;
+		border: 1px solid #e5e7eb;
+		border-radius: 8px;
+	}
+
+	.description p {
+		margin: 0 0 0.5rem;
+		white-space: pre-wrap;
+		line-height: 1.5;
+	}
+
+	.description small {
+		color: #6b7280;
+		font-size: 0.75rem;
 	}
 </style>
