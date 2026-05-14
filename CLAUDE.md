@@ -217,11 +217,15 @@ Antes de cada `git push`:
 - **M2** [concluído]: VLM local (Ollama Qwen2.5-VL 3B) descrevendo a tela.
 - **M3** [concluído]: Loop turn-based fechado (captura → planner →
   executor) com 2048. Valida o pipeline; é a base do modo `turn_based`.
-- **M4**: **Memória SQLite + sqlite-vec**. Schema completo:
-  `games` (com `tempo`, `anti_cheat`), `recordings`, `recording_frames`,
-  `motor_models`, `episodes`, `skills`, `knowledge`. Migrations
-  versionadas. Repositórios + endpoints CRUD. Migra `session/games.py`
-  para o DB. Seed: 2048 + 99-nights.
+- **M4** [concluído]: **Memória SQLite + sqlite-vec**. Schema completo
+  versionado por migrations (`backend/memory/migrations/001_initial.sql`)
+  cobrindo todas as tabelas (`games`, `recordings`, `recording_frames`,
+  `motor_models`, `episodes`, `skills`, `knowledge`, + virtuais
+  `vec_skills`, `vec_knowledge`). Conexão thread-local com WAL + FK on.
+  `games_repo` ativo; outros repos ficam como stub com `TODO(MX)`.
+  Seeds idempotentes: 2048, chrome-dino, 99-nights-in-the-forest.
+  CRUD `/games` na UI com badge vermelho de anti-cheat. Gate de
+  `tempo`/`anti_cheat` no `/session/start`.
 - **M5**: **Watch-me-play recording engine**. Captura simultânea de
   frame (15-30 Hz) + inputs do usuário via `pynput`. Grava em SQLite +
   PNG em disco. UI: rec/stop/listar sessões/preview.
@@ -287,30 +291,42 @@ SQLite + `sqlite-vec`, arquivo único em
 `platformdirs.user_data_dir("PlayIA")/playia.db` (mac:
 `~/Library/Application Support/PlayIA/`, win: `%APPDATA%/PlayIA/`).
 
+Estrutura em `backend/memory/`:
+
+- `paths.py` — `data_dir`, `db_path`, `recordings_dir`, `motor_models_dir`
+  via `platformdirs`.
+- `connection.py` — `get_connection()` thread-local com `sqlite-vec`
+  carregado, WAL + FK on.
+- `migrations/__init__.py` — `apply_pending(conn)` idempotente.
+- `migrations/001_initial.sql` — schema inicial.
+- `models.py` — pydantic `Game/Recording/RecordingFrame/MotorModel/Episode/
+  Skill/Knowledge` + enums `Tempo`, `AntiCheat`.
+- `repos/games_repo.py` — ativo (M4).
+- `repos/{recordings,recording_frames,motor_models,episodes,skills,
+  knowledge}_repo.py` — stubs com `TODO(MX)`.
+- `seeds/__init__.py` + `seeds/games.py` — `apply_seeds(conn)` com 3
+  jogos iniciais.
+
 Tabelas principais:
 
 - **games** — perfis de jogo (id, name, url, `tempo`, `anti_cheat`,
-  `allowed_keys`, goal, created_at). `tempo` ∈ `turn_based |
+  `allowed_keys_json`, goal, notes, created_at). `tempo` ∈ `turn_based |
   slow_realtime | fast_realtime`. `anti_cheat` ∈ `none | unknown |
   hyperion | eac | battleye | vanguard | other`.
-- **recordings** — sessões de watch-me-play (id, game_id, started_at,
-  ended_at, fps, frame_count, notes).
-- **recording_frames** — frames + inputs por gravação (recording_id,
-  ts_ms, frame_path, keys_down_json, mouse_x, mouse_y, mouse_buttons_json).
-- **motor_models** — ONNX treinados (id, game_id, recording_id,
-  onnx_path, accuracy, trained_at, version).
-- **episodes** — eventos de play (id, game_id, ts, state_text,
-  action_json, reward, screenshot_path).
-- **skills** — sequências nomeadas (id, game_id, name, description,
-  action_sequence_json, success_rate, times_used, embedding).
-- **knowledge** — fatos semânticos (id, game_id, fact, source, embedding).
-- **schema_version** — controle de migrations.
+- **recordings** — sessões de watch-me-play (M5; tabela já existe).
+- **recording_frames** — frames + inputs por gravação (M5).
+- **motor_models** — ONNX treinados (M6).
+- **episodes** — eventos de play (M8).
+- **skills** — sequências nomeadas com embedding (M8). Espelhada em
+  `vec_skills(embedding float[384])` para busca K-NN.
+- **knowledge** — fatos semânticos (M8). Espelhada em `vec_knowledge`.
+- **schema_version** — controle de migrations (bootstrap automático).
 
 **Frames brutos NÃO vão como BLOB no SQLite** — viram arquivos PNG
 separados, e a coluna `frame_path` aponta pra eles. DB fica leve, storage
 pesado em `<user_data>/PlayIA/data/recordings/<recording_id>/<ts_ms>.png`.
 
-Detalhes em `docs/memory-model.md` (criar no M4).
+Detalhes em [`docs/memory-model.md`](docs/memory-model.md).
 
 ## Provedores de IA
 
@@ -343,15 +359,25 @@ Three módulos com padrão Protocol + Factory + impl:
   `asyncio.Task`, com limites hard de ações/tempo e stop via
   `asyncio.Event`.
 
-`session/games.py` é dicionário; **migra pra `memory/games_repo.py` no M4**.
+Engine lê o `Game` via `games_repo.get(conn, id)`; `session/games.py`
+foi removido em M4.
 
-Endpoints:
+Endpoints do M3 (turn-based):
 | Método | Path | Descrição |
 |---|---|---|
-| GET | `/session/games` | lista perfis (M4: passa a ler do DB). |
-| POST | `/session/start` | inicia loop turn-based. 409 se já houver sessão; 422 se jogo desconhecido; **400 se `tempo != turn_based` ou `anti_cheat != none` sem bypass explícito**. |
+| GET | `/session/games` | dict `{id: Game}` via repo (compat M3). |
+| POST | `/session/start` | inicia loop turn-based. 409 se já houver sessão; 422 se jogo desconhecido; **400 se `tempo != turn_based`**; **403 se `anti_cheat != none` sem `acknowledge_ban_risk: "estou ciente do risco"` no body**. |
 | POST | `/session/stop` | seta o Event, retorna estado. |
 | GET | `/session/status` | snapshot do `SessionState`. |
+
+Endpoints CRUD do catálogo (M4):
+| Método | Path | Descrição |
+|---|---|---|
+| GET | `/games` | lista `list[Game]`, filtros opcionais `?tempo=&anti_cheat=`. |
+| GET | `/games/{id}` | detalhe (404). |
+| POST | `/games` | cria; 409 em id/nome conflitante; id é slug `^[a-z0-9][a-z0-9-]*$`. |
+| PUT | `/games/{id}` | atualiza. |
+| DELETE | `/games/{id}` | apaga; **409 se houver `recordings` ou `motor_models` associados** (`games_repo.has_dependents` antecipa a mensagem antes do FK RESTRICT). |
 
 ## Loop hierárquico (M7 — virá)
 
