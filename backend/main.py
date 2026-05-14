@@ -6,6 +6,7 @@ import json
 import logging
 import sys
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any
 
@@ -18,6 +19,8 @@ from pydantic import BaseModel, Field, field_validator
 from capture.base import Region
 from capture.factory import get_capture
 from executor.factory import get_executor
+from memory.connection import get_connection
+from memory.migrations import apply_pending
 from planner.actions import Action
 from planner.factory import get_planner
 from session.base import SessionState
@@ -59,7 +62,18 @@ def configure_logging() -> None:
 configure_logging()
 log = logging.getLogger("playia.backend")
 
-app = FastAPI(title="PlayIA Backend", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # Aplica migrations pendentes do SQLite no startup. Idempotente.
+    conn = get_connection()
+    applied = apply_pending(conn)
+    if applied:
+        log.info("schema atualizado: migrations aplicadas %s", applied)
+    yield
+
+
+app = FastAPI(title="PlayIA Backend", version="0.1.0", lifespan=lifespan)
 
 # UI roda em http://localhost:1420 (Tauri dev) ou tauri://localhost (produção).
 # Em M1 liberamos qualquer origem local — restringir no M7 quando tivermos Settings.
