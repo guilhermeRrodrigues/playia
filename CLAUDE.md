@@ -238,10 +238,17 @@ Antes de cada `git push`:
   `DELETE /recordings/{id}` (body `{"confirm": true}` obrigatório, 409
   se houver motor_models treinados). macOS exige Input Monitoring
   (separado de Accessibility) — documentado no README.
-- **M6**: **Behavioral cloning trainer**. PyTorch CNN policy network
-  treinada na sessão gravada. Output ONNX salvo em
-  `<user_data>/PlayIA/data/motor_models/<game_id>/<recording_id>.onnx`.
-  UI: tela `/train` com progress + métricas.
+- **M6** [concluído]: **Behavioral cloning trainer + inferência ONNX**.
+  `backend/training/` PyTorch CNN policy network (~350k params: 3 conv
+  strided + AdaptiveAvgPool 4x4 + FC 256). BCE_with_logits em
+  keys+clicks + MSE em mouse_dx/dy. Split 80/20, ETA por epoch,
+  cancel via `threading.Event`. Probe MPS no startup com fallback CPU
+  automático. ONNX export via `dynamo=False` (exporter legado, sem dep
+  `onnxscript`). `backend/motor/` carrega o ONNX via `onnxruntime`
+  CPUExecutionProvider, latência ~7-20ms. UI `/train` com chart inline
+  SVG (sem CDN). Endpoints `/training/{start,status,cancel}`,
+  `/motor-models[?game_id=]`, `/motor-models/{id}` (GET/DELETE),
+  `/motor/test/{game_id}` (debug, 412 se sem motor).
 - **M7**: **Loop hierárquico runtime**. `strategist/` coordena VLM
   (1-3 Hz) e motor model (ONNX, 30 Hz) em threads separados. Game
   profile do 99 Nights incluído com aviso de Hyperion. Funciona em
@@ -425,6 +432,61 @@ Permissões macOS: além de Accessibility (pyautogui para Play),
 `pynput` precisa de **Input Monitoring** em System Settings → Privacy
 & Security. Sem isso, a gravação roda mas `keys_down=[]` — diagnóstico
 documentado no README.
+
+## Training + Motor (M6 — existe)
+
+Dois módulos no padrão da casa:
+
+- `backend/training/` (PyTorch):
+  - `base.py` — `TrainConfig` (epochs, batch_size, lr, img_size,
+    val_split, device, dropout, mouse_loss_weight) e `TrainResult`.
+  - `action_encoding.py` — `encode/decode_keys/decode_mouse` para o
+    vetor de ação `[one_hot_keys | mouse_dx_norm, mouse_dy_norm |
+    click_left, click_right]`. `MOUSE_NORM=200` clipa dx/dy em
+    `[-1, 1]`.
+  - `model.py` — `PolicyNet` (~350k params).
+  - `dataset.py` — `RecordingDataset` lê PNGs via PIL, pré-computa
+    mouse deltas em `__init__`; `num_workers=0` no DataLoader pra
+    reusar conexão thread-local.
+  - `trainer.py` — `Trainer` singleton; `start(recording_id, config)`
+    cria `asyncio.Task` que delega a `asyncio.to_thread`. Status
+    publicado em `_Status` (lock); cancelamento via
+    `threading.Event`. Probe MPS no init.
+  - `onnx_export.py` — `dynamo=False` (exporter legado).
+  - `errors.py` — `TrainerBusyError`/`TrainerCancelledError`/
+    `TrainerDatasetError`.
+
+- `backend/motor/` (onnxruntime):
+  - `base.py` — `Motor` Protocol + `MotorAction`/`MotorMeta`.
+  - `onnx_impl.py` — `ONNXMotor` mantém uma `InferenceSession` por
+    processo (`CPUExecutionProvider`); `predict(png)` replica o
+    preprocess do training.dataset e usa
+    `training.action_encoding.decode_*` no postprocess.
+  - `factory.py`/`errors.py` (`MotorNotFoundError` 412,
+    `MotorInferenceError` 500).
+
+Endpoints (M6):
+| Método | Path | Descrição |
+|---|---|---|
+| GET | `/motor-models[?game_id=]` | lista ordenada DESC por trained_at. |
+| GET | `/motor-models/{id}` | detalhe (404). |
+| DELETE | `/motor-models/{id}` | apaga DB + .onnx em disco. |
+| POST | `/training/start` | `{recording_id, config?}` — 404 rec inexistente, 409 já roda. |
+| GET | `/training/status` | progress live + loss_curve. |
+| POST | `/training/cancel` | idempotente. |
+| GET | `/motor/test/{game_id}` | 1 frame + inferência, sem dispatch. 412 se sem motor model. |
+
+UI `/train` (Svelte 5): dropdown game→recording filtrado, sliders
+epochs/batch/img_size/device, botões Treinar/Cancelar, painel live
+com 6 métricas + chart inline SVG (train/val polylines), banner verde
+de "concluído" com motor_model_id, accuracy_keys, path do `.onnx`.
+
+Notas conhecidas:
+- ONNX final ~1-5MB pra `PolicyNet` default.
+- Treino de 9k frames @ 30fps no M1/M2/M3 com MPS leva 3-10 min;
+  fallback CPU multiplica por ~3.
+- Accuracy < 60% em qualquer dataset = sinal pra refazer a gravação
+  ou aumentar `epochs`; o motor model funciona mas joga mal.
 
 ## Loop hierárquico (M7 — virá)
 
