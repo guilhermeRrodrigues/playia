@@ -5,49 +5,89 @@
 
 ## Visão
 
-**PlayIA** é um app desktop (Windows) que assiste uma IA jogando qualquer jogo
-e que aprende ao longo do tempo. Dois modos principais:
+**PlayIA** é um app desktop (Windows) que **aprende a jogar um jogo específico
+observando você jogar por 30-60 minutos**, e depois joga sozinho com qualidade
+suficiente para ser útil.
 
-1. **Play** — a IA joga sozinha, observando a tela e controlando teclado+mouse.
-2. **Watch me play** — o usuário joga, a IA observa e memoriza estratégias.
+**Alvo concreto da v1**: jogos de ação no Roblox, especificamente
+**99 Nights in the Forest**. A arquitetura é genérica — qualquer jogo
+single-player ou sandbox onde automação seja permitida funciona da mesma forma.
 
-Memória persistente faz com que a IA melhore entre sessões e entre jogos.
+Como funciona, em quatro fases:
+
+1. **Watch me play** — você joga 30-60 min, PlayIA grava `(frame, inputs)` a
+   15-30 Hz e salva como dataset.
+2. **Train** — um modelo pequeno (CNN policy network) é treinado por
+   *behavioral cloning* naquela gravação. Saída: arquivo ONNX, ~5-20MB, por jogo.
+3. **Play** — IA joga em **modo hierárquico**:
+   - **VLM estrategista** (1-30s/decisão): define a INTENÇÃO em pt-br
+     ("coletar madeira", "fugir do lobo", "construir abrigo").
+   - **Motor model** (5-30ms/decisão): traduz a intenção em teclas+mouse
+     em tempo real, condicionado pelo frame atual.
+4. **Improve** — episódios bem-sucedidos viram *skills* nomeadas que o
+   VLM passa a invocar diretamente, sem re-decidir do zero.
+
+Memória persistente em SQLite faz com que cada jogo tenha seu próprio
+motor model + skills + histórico, e melhore ao longo do tempo.
 
 Distribuído como instalador `.exe` via GitHub Releases (auto-update embutido).
 
-## Ambiente de desenvolvimento vs alvo — LEIA ANTES DE QUALQUER COISA
+## Segurança e ética — RISCO REAL DE BAN, LEIA
 
-- **Desenvolvimento**: macOS (arm64, Apple Silicon). É onde o código é escrito,
-  os testes unitários rodam, o build do Tauri (cargo + npm) é validado.
-- **Alvo de produção**: Windows. É onde o app é instalado e usado de verdade.
-- **Como o usuário testa funcionalmente**: baixando a release `.exe` no GitHub
-  Releases e rodando no Windows. O usuário **não roda o app nativamente no Mac**
-  para testar features Windows-only (captura DirectX, controle DirectInput, etc).
+PlayIA controla teclado e mouse de fora do jogo. **Anti-cheats modernos
+detectam isso e banem a conta + HWID.** Nenhuma técnica aqui é segura
+contra anti-cheat. Esse não é o projeto.
+
+Anti-cheats que detectam PlayIA hoje:
+- **Hyperion (Roblox)** — padrão em todos os jogos Roblox desde 2024.
+  Detecta `pyautogui`, `pydirectinput`, AutoHotkey, injeção de processo,
+  leitura de memória, e tem detecções pra muitas VMs. **Bans afetam a
+  conta inteira do Roblox e podem afetar o HWID.**
+- **Vanguard (Valorant)**, **EAC**, **BattlEye**, **PunkBuster** — mesmo
+  risco em jogos PC.
+
+Política do projeto:
+
+1. **`GameProfile.anti_cheat`** é coluna obrigatória no schema.
+   Valores: `none | unknown | hyperion | eac | battleye | vanguard | other`.
+2. **UI bloqueia** sessões em jogos com `anti_cheat != "none"` por padrão.
+   Bypass exige checkbox "Eu entendo o risco de ban" + digitar a frase
+   "estou ciente do risco" no campo de confirmação. Não há jeito de pular.
+3. **Para Roblox especificamente**, o aviso é em vermelho e recomenda:
+   conta descartável (alt), Roblox Studio em playtest local (sem login),
+   ou jogos não-Roblox sem anti-cheat para desenvolvimento da arquitetura.
+4. **README** tem uma seção grande sobre isso, em pt-br.
+5. **Modo seguro recomendado pra dev**: 99 Nights pode rodar dentro do
+   Roblox Studio em "Play Solo" (não conecta ao servidor de produção,
+   Hyperion não roda nesse modo). Use isso para iterar.
+
+Nunca tente burlar Hyperion, ofuscar o app pra escapar de detecção,
+hookar driver de kernel, nada disso. Se um caminho técnico for nessa
+direção, **pare e me avise**.
+
+## Ambiente de desenvolvimento vs alvo
+
+- **Desenvolvimento**: macOS (arm64, Apple Silicon).
+- **Alvo de produção**: Windows. Roblox roda em Windows; Hyperion roda em
+  Windows; a release final é `.exe`.
+- **Como o usuário testa funcionalmente**: baixando o `.exe` no GitHub
+  Releases e instalando no Windows.
 
 Consequências práticas:
 
-1. **Use abstrações cross-platform por padrão.** Toda funcionalidade dependente
-   de SO precisa ter implementação `win32` E uma `darwin`/`linux` que pelo menos
-   não quebre o app em dev.
-   - Captura: `dxcam` (Windows) + `mss` (macOS/Linux) atrás de um Protocol.
-   - Input: `pydirectinput` (Windows) + `pyautogui` (macOS/Linux) atrás de um Protocol.
-   - Caminhos do usuário: use `platformdirs`, nunca string hardcoded.
-2. **Não trave o desenvolvimento esperando Windows.** Faça stub/fallback que rode
-   no Mac, e marque com `# TODO(windows-only)` ou um teste skipado o que precisar
-   de validação real lá.
-3. **CI roda em `windows-latest`** (via `tauri-action`) — é a fonte da verdade
-   para "isso funciona em produção". O Mac é fonte de verdade para "isso compila
-   e a arquitetura está sã".
-4. **Antes de cortar release**, rode pelo menos `cargo check --target x86_64-pc-windows-msvc`
-   localmente (precisa do toolchain Windows no rustup) ou confie no CI.
-5. **Quando uma feature for fundamentalmente Windows-only** (ex: hook em DirectX
-   overlay), documente isso explicitamente no código e no README, e implemente
-   o fallback no Mac como "modo demo" — capturar via mss e logar um aviso.
-6. **Releases**: tag `vX.Y.Z` no Mac → GitHub Actions builda no `windows-latest`
-   → instalador NSIS aparece no Releases → usuário baixa e instala no Windows.
+1. **Cross-platform por default**. Toda dep específica de SO atrás de
+   Protocol/factory. Captura, input, paths (use `platformdirs`).
+2. **Não trave o desenvolvimento esperando Windows**. Fallback no Mac,
+   `# TODO(windows-only)` quando necessário.
+3. **CI roda em `windows-latest`** (via `tauri-action`) — fonte da verdade
+   pra "isso funciona em produção". Mac é fonte de verdade pra
+   "isso compila e a arquitetura está sã".
+4. **Treino de motor model**: PyTorch com MPS no Mac (Apple Silicon) ou
+   CUDA no Windows. Treina onde a release vai rodar quando possível.
+5. **Inferência ONNX**: cross-platform por design, CPU é suficiente.
 
-Se algo só puder ser validado em Windows e bloquear o avanço, **pare e avise** —
-nunca improvise um "funciona no Mac, deve funcionar no Windows" sem evidência.
+Se algo só puder ser validado em Windows e bloquear, **pare e avise** —
+nunca improvise um "deve funcionar no Windows" sem evidência.
 
 ## Stack obrigatória (não desviar sem discutir)
 
@@ -56,107 +96,169 @@ nunca improvise um "funciona no Mac, deve funcionar no Windows" sem evidência.
 - **IPC**: HTTP local (FastAPI no sidecar) entre Tauri e Python.
 - **HTTP client**: `httpx` (async) para falar com providers de VLM/LLM.
 - **Captura de tela**: `dxcam` (Windows, 240+ FPS). Fallback `mss`.
-- **Input**: `pyautogui` (+ `pydirectinput` para jogos AAA com DirectInput).
-- **VLM padrão**: Ollama + `qwen2.5vl:3b` (local, gratuito, offline; cabe
-  inteiro na GPU em Apple Silicon 16GB. O 7b spilla pro CPU e fica
-  inviável — 120s/descrição na máquina de dev).
-- **BYOK opcional**: Gemini, Groq, Claude API, OpenAI, OpenRouter via UI.
-- **Memória**: SQLite + `sqlite-vec` (arquivo único `playia.db`).
+- **Input (executor)**: `pyautogui` (+ `pydirectinput` no Windows pra
+  DirectInput).
+- **Captura de input do usuário** (watch-me-play): `pynput` (cross-platform).
+- **VLM estrategista padrão**: Ollama + `qwen2.5vl:3b` (local, gratuito,
+  offline; o 7b spilla pro CPU no Mac 16GB e fica inviável).
+- **BYOK opcional (M9)**: Gemini, Groq, Claude API, OpenAI, OpenRouter.
+- **Memória**: SQLite + `sqlite-vec` (arquivo único em
+  `platformdirs.user_data_dir("PlayIA")`).
 - **Embeddings**: `sentence-transformers/all-MiniLM-L6-v2` local.
+- **Treino do motor model**: PyTorch (MPS no Mac / CUDA no Windows).
+  Pequenas CNN policy networks (~1-5M params).
+- **Inferência do motor model**: ONNX Runtime (CPU funciona; GPU opcional).
 - **CI/CD**: GitHub Actions com `tauri-action` → NSIS installer.
-- **Auto-update**: `tauri-plugin-updater` lendo `latest.json` do GitHub Release.
+- **Auto-update**: `tauri-plugin-updater` lendo `latest.json` do Release.
+
+## Arquitetura de dois andares — POR QUE EXISTE
+
+VLM-no-loop (M3 atual, 2048) **não consegue jogar ação**. Latência local
+fica em 5-30s/decisão e jogos de ação rodam a 30-60 Hz. Sem milagre.
+
+A solução universal é separar **estratégia** (lenta) de **motor** (rápido):
+
+```
+┌────────────────────────────────────────────────────────────┐
+│ Loop estratégico (0.1 – 1 Hz)                              │
+│   captura frame → VLM define INTENÇÃO em pt-br → publica   │
+│   ex.: "coletar madeira da árvore à frente"                │
+└──────────────────────────┬─────────────────────────────────┘
+                           │ intenção (string + parâmetros)
+                           ▼
+┌────────────────────────────────────────────────────────────┐
+│ Loop motor (30 – 60 Hz)                                    │
+│   captura frame → motor model (ONNX) → teclas/mouse        │
+│   motor treinado por jogo via behavioral cloning           │
+└────────────────────────────────────────────────────────────┘
+```
+
+Quando usar cada um:
+
+- **`turn_based`** (xadrez, 2048, RPG de turno) — só VLM. Motor model não
+  é necessário.
+- **`slow_realtime`** (Stardew, RPG isométrico, jogo de browser lento) —
+  só VLM, com loop em 1-2 Hz (Groq na nuvem ajuda muito).
+- **`fast_realtime`** (Roblox de ação, platformers, FPS) — **hierárquico
+  obrigatório**. Precisa de motor model treinado pro jogo específico.
+
+O `GameProfile` declara `tempo` no schema. O runtime de play recusa
+iniciar sessão de `fast_realtime` sem motor model treinado pra aquele jogo.
 
 ## Estrutura esperada
 
 ```
 playia/
 ├── src-tauri/              # Rust shell (Tauri)
-│   ├── src/main.rs         # spawn do sidecar Python
-│   ├── tauri.conf.json     # config + sidecar binary path
-│   └── Cargo.toml
 ├── src/                    # Frontend SvelteKit
-│   ├── routes/
-│   ├── lib/
-│   └── app.html
-├── backend/                # Python sidecar
-│   ├── main.py             # entrypoint FastAPI
-│   ├── capture/            # dxcam wrapper
-│   ├── vision/             # provedores VLM (ollama, gemini, claude, …)
-│   ├── memory/             # sqlite-vec, episodes/skills/knowledge
-│   ├── planner/            # loop de decisão
-│   ├── executor/           # pyautogui
-│   ├── watch/              # modo "watch me play"
+│   └── routes/
+│       ├── +page.svelte    # home (cards Play / Record / Train / Inspect)
+│       ├── inspect/        # debug M2 (capturar + descrever)
+│       ├── play/           # M3 turn-based; M7 fast-realtime hierárquico
+│       ├── record/         # M5 watch-me-play
+│       ├── train/          # M6 treino do motor model
+│       ├── games/          # M4 catálogo de jogos (CRUD)
+│       └── settings/       # M9 BYOK
+├── backend/
+│   ├── main.py
+│   ├── capture/            # M1 — screen capture cross-platform
+│   ├── vision/             # M2 — VLM providers
+│   ├── executor/           # M3 — keyboard/mouse output
+│   ├── planner/            # M3 — VLM-no-loop (turn_based)
+│   ├── session/            # M3 — turn-based session engine
+│   ├── memory/             # M4 — SQLite + sqlite-vec, repositories
+│   ├── recording/          # M5 — watch-me-play engine (pynput + capture)
+│   ├── training/           # M6 — behavioral cloning trainer (PyTorch)
+│   ├── motor/              # M6 — motor model inference (ONNX)
+│   ├── strategist/         # M7 — hierarchical loop coordinator
 │   └── pyproject.toml
 ├── .github/workflows/
-│   └── release.yml         # tauri-action
-├── CLAUDE.md               # este arquivo
+│   └── release.yml         # M10
+├── CLAUDE.md
 ├── README.md
 └── docs/
     ├── architecture.md
     └── memory-model.md
 ```
 
+Padrão de cada módulo backend: `base.py` (Protocol + dataclasses) +
+`errors.py` + `factory.py` + `<impl>_impl.py`. Vale para todos.
+
 ## Política de commits e push
 
-**Faça commit + push automaticamente** sempre que terminar uma unidade de trabalho.
-O usuário liberou push direto na `main` para esta fase inicial (solo dev).
+**Faça commit + push automaticamente** sempre que terminar uma unidade
+de trabalho. Push direto na `main` está liberado nesta fase (solo dev).
 
 Regras:
 
-- **Conventional Commits** (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`, `ci:`).
-- **Mensagens em português**, primeira linha ≤ 72 caracteres, corpo opcional explicando *por quê*.
-- **Branch**: trabalhe direto em `main` por enquanto. Quando começar a ter usuários, mude para PRs.
-- **Tags de release**: `vMAJOR.MINOR.PATCH` (SemVer). `vX.Y.Z` dispara o workflow do release.
-- **Não comite**: segredos, chaves de API, modelos baixados (`*.gguf`, `*.safetensors`), `playia.db` de teste, builds (`target/`, `dist/`, `build/`, `node_modules/`, `__pycache__/`, `*.spec`).
+- **Conventional Commits** (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`,
+  `test:`, `ci:`).
+- **Mensagens em português**, primeira linha ≤ 72 caracteres, corpo
+  opcional explicando *por quê*.
+- **Branch**: trabalhe direto em `main`. Quando começar a ter usuários
+  externos, mude para PRs.
+- **Tags de release**: `vMAJOR.MINOR.PATCH` (SemVer). `vX.Y.Z` dispara
+  o workflow.
+- **Não comite**: segredos, chaves de API, modelos baixados
+  (`*.gguf`, `*.safetensors`, `*.onnx`), `playia.db` de teste, gravações
+  (`data/recordings/`), builds (`target/`, `dist/`, `build/`,
+  `node_modules/`, `__pycache__/`, `*.spec`).
 
 Antes de cada `git push`:
 
-1. Confirme que o repo ainda buila (`cargo check`, `npm run build`, `python -m compileall backend`).
+1. Confirme que o repo ainda buila (`cargo check`, `npm run build`,
+   `uv run python -m compileall backend`).
 2. Confirme que o `.gitignore` cobre o que você gerou.
-3. Mensagem do commit descreve o **resultado**, não os passos (`feat: capture loop entrega frames ao planner` em vez de `mexi no dxcam`).
-
-## Segurança e ética — IMPORTANTE
-
-PlayIA **NÃO PODE** ser usado em jogos multiplayer com anti-cheat
-(Vanguard, EAC, BattlEye, Hyperion). Resultado: ban da conta + HWID.
-
-- Adicione um **disclaimer obrigatório** na UI antes da primeira sessão.
-- Considere detectar anti-cheats em execução e bloquear automaticamente.
-- README precisa ter um aviso grande e claro.
-- Foco: single-player, jogos sem anti-cheat, sandboxes, jogos de navegador.
+3. Mensagem do commit descreve o **resultado**, não os passos.
 
 ## Marcos (roadmap)
 
-- **M1** [concluído]: Tauri app + sidecar Python que captura a tela e mostra na UI.
-- **M2** [concluído]: VLM local (Ollama Qwen2.5-VL) descrevendo a tela via
-  `POST /describe`. Health-check em `GET /vlm/status`. `backend/vision/` segue
-  o mesmo padrão Protocol + Factory + impl de `backend/capture/`.
-- **M3** [concluído]: Loop fechado captura → planner (VLM decide) → executor
-  (pyautogui). Jogo alvo: 2048 (browser). Novos módulos `backend/executor/`,
-  `backend/planner/`, `backend/session/` seguem o mesmo padrão Protocol +
-  Factory + impl. Endpoints: `POST /session/start|stop`, `GET /session/status`,
-  `GET /session/games`. UI ganhou `/play` (controle da sessão) e `/inspect`
-  (debug do M2, ex-rota `/`).
-- **M4**: Memória episódica em SQLite-vec.
-- **M5**: Skill curation + self-reflection.
-- **M6**: Modo watch-me-play.
-- **M7**: UI de Settings + BYOK multi-provider.
-- **M8**: Release v1.0 via GitHub Actions com auto-update.
+- **M1** [concluído]: Tauri app + sidecar Python + captura na UI.
+- **M2** [concluído]: VLM local (Ollama Qwen2.5-VL 3B) descrevendo a tela.
+- **M3** [concluído]: Loop turn-based fechado (captura → planner →
+  executor) com 2048. Valida o pipeline; é a base do modo `turn_based`.
+- **M4**: **Memória SQLite + sqlite-vec**. Schema completo:
+  `games` (com `tempo`, `anti_cheat`), `recordings`, `recording_frames`,
+  `motor_models`, `episodes`, `skills`, `knowledge`. Migrations
+  versionadas. Repositórios + endpoints CRUD. Migra `session/games.py`
+  para o DB. Seed: 2048 + 99-nights.
+- **M5**: **Watch-me-play recording engine**. Captura simultânea de
+  frame (15-30 Hz) + inputs do usuário via `pynput`. Grava em SQLite +
+  PNG em disco. UI: rec/stop/listar sessões/preview.
+- **M6**: **Behavioral cloning trainer**. PyTorch CNN policy network
+  treinada na sessão gravada. Output ONNX salvo em
+  `<user_data>/PlayIA/data/motor_models/<game_id>/<recording_id>.onnx`.
+  UI: tela `/train` com progress + métricas.
+- **M7**: **Loop hierárquico runtime**. `strategist/` coordena VLM
+  (1-3 Hz) e motor model (ONNX, 30 Hz) em threads separados. Game
+  profile do 99 Nights incluído com aviso de Hyperion. Funciona em
+  Roblox Studio playtest local.
+- **M8**: **Skill curation + self-reflection**. Episódios viram skills
+  nomeadas; VLM invoca skills diretamente quando reconhece o cenário.
+- **M9**: **BYOK + Settings UI**. Multi-provider (Gemini, Groq, Claude,
+  OpenAI, OpenRouter) com cloud opcional pro VLM estrategista.
+- **M10**: **Release v1.0**. GitHub Actions, NSIS installer, auto-update,
+  README polido, demo gif.
 
 Trabalhe um marco por vez. Não pule.
 
 ## Convenções de código
 
-- **Python**: 3.12, type hints obrigatórios, `ruff` para lint/format, `pydantic` para schemas.
-- **Rust**: edição 2021, `cargo fmt` antes de commit, evite `unwrap()` fora de testes.
-- **TS/Svelte**: `prettier` + `eslint`, strict mode no TS, componentes pequenos.
-- **Nomes**: pastas e arquivos em `kebab-case`, classes em `PascalCase`, funções em `snake_case` (Python) ou `camelCase` (TS/Rust).
-- **Logs**: estruturados (JSON), nível mínimo `INFO` em prod, `DEBUG` em dev. Sem `print()`.
+- **Python**: 3.12, type hints obrigatórios, `ruff` para lint/format,
+  `pydantic` para schemas. `print()` proibido — use `logging`.
+- **Rust**: edição 2021, `cargo fmt` antes de commit, evite `unwrap()`
+  fora de testes.
+- **TS/Svelte**: `prettier` + `eslint`, strict mode no TS, componentes
+  pequenos. Svelte 5 com runes (`$state`, `$derived`).
+- **Nomes**: pastas e arquivos em `kebab-case`, classes em `PascalCase`,
+  funções em `snake_case` (Python) ou `camelCase` (TS/Rust).
+- **Logs**: estruturados (JSON), nível mínimo `INFO` em prod, `DEBUG`
+  em dev.
 
 ## Como rodar em dev
 
 Pré-requisito do M2 em diante: Ollama instalado + `qwen2.5vl:3b` baixado.
-Rode `bash scripts/setup-ollama.sh` para validar antes de subir o app.
+Rode `bash scripts/setup-ollama.sh` pra validar antes de subir o app.
 
 ```bash
 # Em outro terminal, daemon do VLM:
@@ -174,31 +276,52 @@ cd backend
 uv run python main.py  # FastAPI em http://127.0.0.1:8765
 ```
 
-(Comandos exatos vão evoluir — atualize esta seção quando mudarem.)
+**macOS Accessibility**: o executor (pyautogui) precisa de permissão em
+*System Settings → Privacy & Security → Accessibility*. Sem isso o
+input falha silenciosamente. O endpoint `/session/start` levanta
+`ExecutorPermissionError` com mensagem prescritiva.
 
-## Modelo de memória (resumo)
+## Modelo de memória
 
-Três tabelas no SQLite, indexadas por `sqlite-vec`:
+SQLite + `sqlite-vec`, arquivo único em
+`platformdirs.user_data_dir("PlayIA")/playia.db` (mac:
+`~/Library/Application Support/PlayIA/`, win: `%APPDATA%/PlayIA/`).
 
-- **episodes** — cada par (state, action, outcome) durante uma sessão.
-- **skills** — sequências de ações curadas que funcionaram repetidamente.
-- **knowledge** — fatos semânticos sobre o jogo (regras, atalhos, vocabulário).
+Tabelas principais:
 
-Após cada sessão, o agente roda um passo de *self-reflection* e promove
-episódios bons para skills, ajusta `success_rate` das skills usadas.
+- **games** — perfis de jogo (id, name, url, `tempo`, `anti_cheat`,
+  `allowed_keys`, goal, created_at). `tempo` ∈ `turn_based |
+  slow_realtime | fast_realtime`. `anti_cheat` ∈ `none | unknown |
+  hyperion | eac | battleye | vanguard | other`.
+- **recordings** — sessões de watch-me-play (id, game_id, started_at,
+  ended_at, fps, frame_count, notes).
+- **recording_frames** — frames + inputs por gravação (recording_id,
+  ts_ms, frame_path, keys_down_json, mouse_x, mouse_y, mouse_buttons_json).
+- **motor_models** — ONNX treinados (id, game_id, recording_id,
+  onnx_path, accuracy, trained_at, version).
+- **episodes** — eventos de play (id, game_id, ts, state_text,
+  action_json, reward, screenshot_path).
+- **skills** — sequências nomeadas (id, game_id, name, description,
+  action_sequence_json, success_rate, times_used, embedding).
+- **knowledge** — fatos semânticos (id, game_id, fact, source, embedding).
+- **schema_version** — controle de migrations.
+
+**Frames brutos NÃO vão como BLOB no SQLite** — viram arquivos PNG
+separados, e a coluna `frame_path` aponta pra eles. DB fica leve, storage
+pesado em `<user_data>/PlayIA/data/recordings/<recording_id>/<ts_ms>.png`.
 
 Detalhes em `docs/memory-model.md` (criar no M4).
 
 ## Provedores de IA
 
-Abstração em `backend/vision/` (padrão idêntico a `backend/capture/`):
+Abstração em `backend/vision/` (padrão Protocol + Factory + impl):
 
 - `vision/base.py` — `VLMProvider` Protocol + `VLMStatus` dataclass.
-- `vision/factory.py` — `get_vlm()` (hoje sempre Ollama; multi-provider no M7).
+- `vision/factory.py` — `get_vlm()` (hoje Ollama; multi-provider no M9).
 - `vision/ollama_impl.py` — `OllamaProvider` via `httpx` async.
 - `vision/errors.py` — `VLMUnavailableError`/`ModelMissing`/`Timeout`.
 
-Interface mínima atual (M2):
+Interface atual:
 
 ```python
 class VLMProvider(Protocol):
@@ -207,77 +330,45 @@ class VLMProvider(Protocol):
     async def status(self) -> VLMStatus: ...
 ```
 
-Implementações futuras (M7): `GeminiProvider`, `GroqProvider`,
+Implementações futuras (M9): `GeminiProvider`, `GroqProvider`,
 `ClaudeProvider`, `OpenAIProvider`, `OpenRouterProvider`.
 
-## Loop de jogo (M3)
+## Loop turn-based (M3 — existe)
 
-Três módulos novos, mesmo padrão Protocol + Factory + impl:
+Three módulos com padrão Protocol + Factory + impl:
 
-- **`backend/executor/`** — input de teclado/mouse.
-  - `base.py`: `InputExecutor` Protocol (`key_tap`, `click`, `wait`).
-  - `pyautogui_impl.py`: default cross-platform. `FAILSAFE=True`, mapa
-    `_DOM_TO_PYAG` traduz `"ArrowUp"`/`"Space"`/`"Enter"` etc. para o
-    vocabulário do pyautogui. Erros: `ExecutorPermissionError` (mac sem
-    Accessibility, com mensagem prescritiva) e `ExecutorBlockedError`
-    (failsafe acionado).
-  - `directinput_impl.py`: stub para M+ (pydirectinput).
-  - `factory.py`: hoje sempre `PyAutoGuiExecutor`.
+- **`backend/executor/`** — input.
+- **`backend/planner/`** — VLM decide action a partir da tela.
+- **`backend/session/`** — orquestra captura → plan → exec em
+  `asyncio.Task`, com limites hard de ações/tempo e stop via
+  `asyncio.Event`.
 
-- **`backend/planner/`** — decide a próxima ação a partir da tela.
-  - `actions.py`: `Action` pydantic (`kind`, `key`, `x`, `y`, `duration_ms`,
-    `reason`) + validação cruzada por kind + `parse_action_json` (extrai
-    primeiro `{...}` balanceado da resposta da VLM).
-  - `vlm_planner.py`: monta prompt em pt-br com objetivo, histórico,
-    `allowed_keys` e few-shots. Retry com correção se JSON inválido ou
-    tecla fora do vocabulário.
-  - `errors.py`: `PlannerError`/`PlannerParseError`/`PlannerNoActionError`.
+`session/games.py` é dicionário; **migra pra `memory/games_repo.py` no M4**.
 
-- **`backend/session/`** — orquestra o loop.
-  - `engine.py`: `SessionEngine` rodando em `asyncio.Task`. Stop via
-    `asyncio.Event` mata o loop em ≤1 ciclo. Limites hard: `max_actions`,
-    `max_duration_s`. `history` cap em 20. `last_screenshot_b64` guarda o
-    crop que a VLM acabou de ver.
-  - `base.py`: dataclass `SessionState` (status, game, region, last_action,
-    history, stop_reason, error…).
-  - `games.py`: dicionário `GAMES: dict[str, GameProfile]` — **ponto de
-    extensão** para novos jogos. Hoje só `"2048"`. Cada perfil tem
-    `name/url/goal/allowed_keys`.
-
-Loop em pseudo-código (`engine._run`):
-
-```
-while not stop.is_set():
-    png = capture.grab(region)
-    state.last_screenshot_b64 = b64(png)
-    action = await planner.decide(png, goal, history, allowed_keys)
-    history.append(action)            # cap 20
-    if action.kind == "stop": break
-    executor.dispatch(action)         # key_tap / click / wait
-    actions_taken += 1
-    await asyncio.wait_for(stop.wait(), step_delay_ms / 1000)
-```
-
-Captura aceita região (`grab(region)`) desde o M3 — `MssCapture` recorta
-via dict de monitor; `DxCamCapture` ainda ignora (TODO M8).
-
-Endpoints adicionados pelo M3 (todos em `backend/main.py`):
-
+Endpoints:
 | Método | Path | Descrição |
 |---|---|---|
-| GET | `/session/games` | catálogo `dict[str, GameProfile]` (hoje só 2048). |
-| POST | `/session/start` | inicia loop. 409 se já houver sessão; 422 se jogo desconhecido. |
-| POST | `/session/stop` | seta `asyncio.Event` (mata loop em ≤1 ciclo) e retorna estado. |
-| GET | `/session/status` | snapshot do `SessionState`, com `last_screenshot_b64`. |
+| GET | `/session/games` | lista perfis (M4: passa a ler do DB). |
+| POST | `/session/start` | inicia loop turn-based. 409 se já houver sessão; 422 se jogo desconhecido; **400 se `tempo != turn_based` ou `anti_cheat != none` sem bypass explícito**. |
+| POST | `/session/stop` | seta o Event, retorna estado. |
+| GET | `/session/status` | snapshot do `SessionState`. |
 
-Configuração: arquivo `~/.playia/config.toml` + override via UI (Settings) — M7.
+## Loop hierárquico (M7 — virá)
+
+Será `backend/strategist/`, coordenando VLM lento + motor rápido. Quando
+chegar lá, atualize esta seção com a arquitetura concreta.
 
 ## Referência rápida
 
 - Pesquisa técnica completa: `/Users/guilherme/PlayIA-Pesquisa.md` (fora do repo).
-- Inspiração arquitetural: [Cradle Framework](https://github.com/BAAI-Agents/Cradle).
-- Modelo VLM padrão: [Qwen2.5-VL no Ollama](https://ollama.com/library/qwen2.5vl).
+- Inspiração: [Cradle Framework](https://github.com/BAAI-Agents/Cradle),
+  [DeepMind SIMA](https://deepmind.google/blog/sima-generalist-ai-agent-for-3d-virtual-environments/).
+- VLM padrão: [Qwen2.5-VL no Ollama](https://ollama.com/library/qwen2.5vl).
+- 99 Nights in the Forest (alvo da v1):
+  [roblox.com/games/...](https://www.roblox.com/games/) — usar
+  Roblox Studio em playtest local pra dev.
 
 ---
 
-*Quando alterar arquitetura, stack ou políticas, atualize este arquivo no mesmo commit.*
+*Quando alterar arquitetura, stack ou políticas, atualize este arquivo
+no mesmo commit.*
