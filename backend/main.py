@@ -885,6 +885,61 @@ def hsession_status() -> HSessionStateResponse:
     return _serialize_hstate(_hengine.status())
 
 
+class MotorHealth(BaseModel):
+    game_id: str
+    game_exists: bool
+    motor_available: bool
+    motor_model_id: int | None = None
+    accuracy: float | None = None
+    onnx_path: str | None = None
+    onnx_size_bytes: int | None = None
+    onnx_exists: bool | None = None
+    trained_at: datetime | None = None
+    reason: str | None = None
+
+
+@app.get("/motor/health/{game_id}", response_model=MotorHealth)
+def motor_health(game_id: str) -> MotorHealth:
+    """Estado do motor model para um jogo, sem rodar inferência.
+
+    UI do /play hierárquico chama isso antes de habilitar Iniciar; também
+    serve pra detectar ONNX faltando em disco (raro, mas acontece se o
+    user apaga manual o user_data).
+    """
+    conn = get_connection()
+    game = games_repo.get(conn, game_id)
+    if game is None:
+        return MotorHealth(
+            game_id=game_id,
+            game_exists=False,
+            motor_available=False,
+            reason="jogo desconhecido no catálogo",
+        )
+    motor = motor_models_repo.get_latest_for_game(conn, game_id)
+    if motor is None:
+        return MotorHealth(
+            game_id=game_id,
+            game_exists=True,
+            motor_available=False,
+            reason="nenhum motor_model treinado — use /train",
+        )
+    onnx_path = Path(motor.onnx_path)
+    onnx_exists = onnx_path.exists()
+    onnx_size = onnx_path.stat().st_size if onnx_exists else None
+    return MotorHealth(
+        game_id=game_id,
+        game_exists=True,
+        motor_available=onnx_exists,
+        motor_model_id=motor.id,
+        accuracy=motor.accuracy,
+        onnx_path=str(onnx_path),
+        onnx_size_bytes=onnx_size,
+        onnx_exists=onnx_exists,
+        trained_at=motor.trained_at,
+        reason=None if onnx_exists else "arquivo ONNX não existe em disco",
+    )
+
+
 @app.get("/motor/test/{game_id}", response_model=MotorPrediction)
 def motor_test(game_id: str) -> MotorPrediction:
     """Captura 1 frame e devolve a ação prevista pelo motor (sem executar).
