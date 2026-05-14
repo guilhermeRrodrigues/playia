@@ -21,7 +21,7 @@ from capture.factory import get_capture
 from executor.factory import get_executor
 from memory.connection import get_connection
 from memory.migrations import apply_pending
-from memory.models import Game
+from memory.models import AntiCheat, Game, Tempo
 from memory.repos import games_repo
 from memory.seeds import apply_seeds
 from planner.actions import Action
@@ -163,6 +163,9 @@ class VLMStatusResponse(BaseModel):
     issue: str | None
 
 
+ACK_BAN_RISK_TOKEN = "estou ciente do risco"
+
+
 class StartSessionRequest(BaseModel):
     game: str
     region: list[int] | None = Field(
@@ -172,6 +175,14 @@ class StartSessionRequest(BaseModel):
     max_actions: int = Field(default=200, ge=1, le=10_000)
     max_duration_s: int = Field(default=600, ge=1, le=86_400)
     step_delay_ms: int = Field(default=300, ge=0, le=60_000)
+    acknowledge_ban_risk: str | None = Field(
+        default=None,
+        description=(
+            "Frase literal 'estou ciente do risco' libera sessão em jogos com "
+            "anti_cheat != none. Não é persistida — todo /session/start exige "
+            "envio novo."
+        ),
+    )
 
     @field_validator("region")
     @classmethod
@@ -309,6 +320,45 @@ def session_games() -> dict[str, Game]:
 @app.post("/session/start", response_model=SessionStateResponse)
 async def session_start(body: StartSessionRequest) -> SessionStateResponse:
     region = _region_tuple(body.region) if body.region else None
+
+    # Lookup do profile pra aplicar os gates de tempo/anti-cheat antes
+    # de mexer no engine. O engine faz lookup de novo (defensivo); o
+    # custo é desprezível e mantém a engine self-contained.
+    conn = get_connection()
+    profile = games_repo.get(conn, body.game)
+    if profile is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"jogo desconhecido: {body.game!r}",
+        )
+
+    if profile.tempo is not Tempo.TURN_BASED:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Este modo (M3 turn-based) só suporta jogos turn_based; "
+                f"{profile.id!r} é {profile.tempo.value}. Jogos slow_realtime "
+                f"e fast_realtime serão suportados a partir do M7 (loop hierárquico)."
+            ),
+        )
+
+    if profile.anti_cheat is not AntiCheat.NONE:
+        if body.acknowledge_ban_risk != ACK_BAN_RISK_TOKEN:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"ATENÇÃO: este jogo usa {profile.anti_cheat.value}. "
+                    f"Automação detectada = ban da conta (e possivelmente do HWID). "
+                    f"Para prosseguir mesmo assim, envie acknowledge_ban_risk: "
+                    f"'{ACK_BAN_RISK_TOKEN}' no body da requisição."
+                ),
+            )
+        log.warning(
+            "anti_cheat bypass aceito game=%s anti_cheat=%s",
+            profile.id,
+            profile.anti_cheat.value,
+        )
+
     try:
         state = await _engine.start(
             game=body.game,
@@ -320,7 +370,7 @@ async def session_start(body: StartSessionRequest) -> SessionStateResponse:
     except SessionAlreadyRunningError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
     except ValueError as e:
-        # jogo desconhecido
+        # jogo desconhecido (defesa em profundidade — endpoint já checou)
         raise HTTPException(status_code=422, detail=str(e)) from e
 
     log.info(
