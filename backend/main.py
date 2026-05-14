@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 import sys
 import time
 from contextlib import asynccontextmanager
@@ -11,7 +12,7 @@ from datetime import datetime
 from typing import Any
 
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel, Field, field_validator
@@ -310,11 +311,92 @@ async def describe(body: DescribeRequest | None = None) -> DescribeResponse:
 def session_games() -> dict[str, Game]:
     """Lista games conhecidos, indexados pelo id (slug).
 
-    Mantido como dict-por-id por compat com o frontend M3; a partir de
-    M4.6, o endpoint canônico é :http:get:`/games` (lista plana).
+    Mantido como dict-por-id por compat com o frontend M3; o endpoint
+    canônico para a UI de catálogo é :http:get:`/games` (lista plana).
     """
     conn = get_connection()
     return {g.id: g for g in games_repo.list_all(conn)}
+
+
+# --- /games CRUD --------------------------------------------------------------
+
+
+class GameInput(BaseModel):
+    """Body para PUT /games/{id} (id vem do path).
+
+    Para POST, usa :class:`GameCreate` que herda + exige o id no body.
+    """
+
+    name: str = Field(min_length=1)
+    url: str = Field(min_length=1)
+    tempo: Tempo
+    anti_cheat: AntiCheat
+    allowed_keys: list[str] = Field(default_factory=list)
+    goal: str = Field(min_length=1)
+    notes: str | None = None
+
+
+class GameCreate(GameInput):
+    id: str = Field(min_length=1, pattern=r"^[a-z0-9][a-z0-9-]*$")
+
+
+@app.get("/games", response_model=list[Game])
+def games_list(
+    tempo: Tempo | None = Query(default=None),
+    anti_cheat: AntiCheat | None = Query(default=None),
+) -> list[Game]:
+    conn = get_connection()
+    return games_repo.list_all(conn, tempo=tempo, anti_cheat=anti_cheat)
+
+
+@app.get("/games/{game_id}", response_model=Game)
+def games_get(game_id: str) -> Game:
+    conn = get_connection()
+    g = games_repo.get(conn, game_id)
+    if g is None:
+        raise HTTPException(status_code=404, detail=f"jogo desconhecido: {game_id!r}")
+    return g
+
+
+@app.post("/games", response_model=Game, status_code=201)
+def games_create(body: GameCreate) -> Game:
+    conn = get_connection()
+    try:
+        return games_repo.create(conn, Game(**body.model_dump()))
+    except sqlite3.IntegrityError as e:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Conflito ao criar o jogo (id ou nome já existem): {e}. "
+                f"Use PUT /games/{body.id} se quer atualizar."
+            ),
+        ) from e
+
+
+@app.put("/games/{game_id}", response_model=Game)
+def games_update(game_id: str, body: GameInput) -> Game:
+    conn = get_connection()
+    game = Game(id=game_id, **body.model_dump())
+    try:
+        return games_repo.update(conn, game)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+
+
+@app.delete("/games/{game_id}", status_code=204)
+def games_delete(game_id: str) -> None:
+    conn = get_connection()
+    if games_repo.get(conn, game_id) is None:
+        raise HTTPException(status_code=404, detail=f"jogo desconhecido: {game_id!r}")
+    if games_repo.has_dependents(conn, game_id):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"O jogo {game_id!r} tem recordings ou motor_models associados; "
+                f"apague-os primeiro pela API de gravações/treinos."
+            ),
+        )
+    games_repo.delete(conn, game_id)
 
 
 @app.post("/session/start", response_model=SessionStateResponse)
