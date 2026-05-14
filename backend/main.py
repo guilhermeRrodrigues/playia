@@ -27,6 +27,8 @@ from memory.models import AntiCheat, Game, MotorModel, Recording, Tempo
 from memory.paths import motor_models_dir, recordings_dir
 from memory.repos import games_repo, motor_models_repo, recordings_repo
 from memory.seeds import apply_seeds
+from motor.errors import MotorInferenceError, MotorNotFoundError
+from motor.factory import get_motor
 from planner.actions import Action
 from planner.factory import get_planner
 from recording.errors import RecorderBusyError, RecorderError, RecorderPermissionError
@@ -104,6 +106,7 @@ _executor = get_executor()
 _engine = SessionEngine(_capture, _planner, _executor)
 _recorder = get_recorder(_capture)
 _trainer = Trainer()
+_motor = get_motor()
 
 DEFAULT_DESCRIBE_PROMPT = (
     "Descreva em português o que está acontecendo nesta tela. "
@@ -704,6 +707,57 @@ def training_status() -> dict:
 @app.post("/training/cancel")
 async def training_cancel() -> dict:
     return await _trainer.cancel()
+
+
+# --- /motor (M6) -------------------------------------------------------------
+
+
+class MotorPrediction(BaseModel):
+    motor_model_id: int
+    game_id: str
+    accuracy: float
+    keys_down: list[str]
+    mouse_dx: int
+    mouse_dy: int
+    click_left: bool
+    click_right: bool
+    latency_ms: float
+    raw_logits: list[float]
+
+
+@app.get("/motor/test/{game_id}", response_model=MotorPrediction)
+def motor_test(game_id: str) -> MotorPrediction:
+    """Captura 1 frame e devolve a ação prevista pelo motor (sem executar).
+
+    Útil pra debugar o que o motor model está vendo no jogo antes de
+    deixar o loop hierárquico (M7) bater em executor.dispatch.
+    """
+    try:
+        meta = _motor.load_for_game(game_id)
+    except MotorNotFoundError as e:
+        # 412 = "pré-condição falhou" (jogo existe mas falta o motor model)
+        raise HTTPException(status_code=412, detail=str(e)) from e
+    try:
+        png = _capture.grab(None)
+    except Exception as e:
+        log.exception("falha ao capturar tela em /motor/test")
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    try:
+        action = _motor.predict(png)
+    except MotorInferenceError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    return MotorPrediction(
+        motor_model_id=meta.motor_model_id,
+        game_id=meta.game_id,
+        accuracy=meta.accuracy,
+        keys_down=action.keys_down,
+        mouse_dx=action.mouse_dx,
+        mouse_dy=action.mouse_dy,
+        click_left=action.click_left,
+        click_right=action.click_right,
+        latency_ms=action.latency_ms,
+        raw_logits=action.raw_logits,
+    )
 
 
 @app.post("/session/start", response_model=SessionStateResponse)
