@@ -19,6 +19,11 @@
 			<p>Watch-me-play: a IA observa você jogando e salva o dataset pra treinar (M5).</p>
 			<span class="cta">Abrir →</span>
 		</a>
+		<a class="card train" href="/train">
+			<h2>Treinar</h2>
+			<p>Behavioral cloning sobre uma gravação. Saída: ONNX pro motor model (M6).</p>
+			<span class="cta">Abrir →</span>
+		</a>
 		<a class="card games" href="/games">
 			<h2>Jogos</h2>
 			<p>Catálogo persistente. Tempo (turn-based / realtime) e flag de anti-cheat.</p>
@@ -72,11 +77,17 @@
 
 	.cards {
 		display: grid;
-		grid-template-columns: repeat(4, 1fr);
+		grid-template-columns: repeat(5, 1fr);
 		gap: 1rem;
 	}
 
-	@media (max-width: 1100px) {
+	@media (max-width: 1280px) {
+		.cards {
+			grid-template-columns: repeat(3, 1fr);
+		}
+	}
+
+	@media (max-width: 900px) {
 		.cards {
 			grid-template-columns: 1fr 1fr;
 		}
@@ -114,6 +125,10 @@
 
 	.card.record h2 {
 		color: #b91c1c;
+	}
+
+	.card.train h2 {
+		color: #1d4ed8;
 	}
 
 	.card.games h2 {

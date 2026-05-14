@@ -33,6 +33,9 @@ from recording.errors import RecorderBusyError, RecorderError, RecorderPermissio
 from recording.factory import get_recorder
 from session.base import SessionState
 from session.engine import SessionAlreadyRunningError, SessionEngine
+from training.base import TrainConfig
+from training.errors import TrainerBusyError, TrainerError
+from training.trainer import Trainer
 from vision.errors import (
     VLMModelMissingError,
     VLMTimeoutError,
@@ -100,6 +103,7 @@ _planner = get_planner()
 _executor = get_executor()
 _engine = SessionEngine(_capture, _planner, _executor)
 _recorder = get_recorder(_capture)
+_trainer = Trainer()
 
 DEFAULT_DESCRIBE_PROMPT = (
     "Descreva em português o que está acontecendo nesta tela. "
@@ -644,6 +648,62 @@ def motor_models_delete(motor_id: int) -> None:
             onnx_path.unlink(missing_ok=True)
         except OSError:
             log.exception("DB apagado mas falhou ao limpar ONNX %s", onnx_path)
+
+
+# --- /training (M6) ----------------------------------------------------------
+
+
+class TrainConfigBody(BaseModel):
+    """Subset opcional do TrainConfig exposto pela API."""
+
+    epochs: int | None = Field(default=None, ge=1, le=200)
+    batch_size: int | None = Field(default=None, ge=1, le=512)
+    lr: float | None = Field(default=None, gt=0, le=1.0)
+    img_size: int | None = Field(default=None, ge=32, le=512)
+    val_split: float | None = Field(default=None, gt=0, lt=1)
+    device: str | None = Field(default=None, pattern=r"^(mps|cuda|cpu)$")
+
+
+class StartTrainingRequest(BaseModel):
+    recording_id: int
+    config: TrainConfigBody | None = None
+
+
+def _merge_config(body: TrainConfigBody | None) -> TrainConfig:
+    cfg = TrainConfig()
+    if body is None:
+        return cfg
+    data = body.model_dump(exclude_none=True)
+    for k, v in data.items():
+        setattr(cfg, k, v)
+    return cfg
+
+
+@app.post("/training/start")
+async def training_start(body: StartTrainingRequest) -> dict:
+    conn = get_connection()
+    if recordings_repo.get(conn, body.recording_id) is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"recording {body.recording_id} não existe",
+        )
+    cfg = _merge_config(body.config)
+    try:
+        return await _trainer.start(body.recording_id, cfg)
+    except TrainerBusyError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    except TrainerError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@app.get("/training/status")
+def training_status() -> dict:
+    return _trainer.status_snapshot()
+
+
+@app.post("/training/cancel")
+async def training_cancel() -> dict:
+    return await _trainer.cancel()
 
 
 @app.post("/session/start", response_model=SessionStateResponse)
