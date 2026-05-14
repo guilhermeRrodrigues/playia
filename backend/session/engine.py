@@ -64,6 +64,7 @@ class SessionEngine:
         max_actions: int,
         max_duration_s: int,
         step_delay_ms: int,
+        initial_delay_ms: int = 3000,
     ) -> SessionState:
         if self.is_running():
             raise SessionAlreadyRunningError(
@@ -81,7 +82,14 @@ class SessionEngine:
         self._stop = asyncio.Event()
 
         self._task = asyncio.create_task(
-            self._run(profile, region, max_actions, max_duration_s, step_delay_ms),
+            self._run(
+                profile,
+                region,
+                max_actions,
+                max_duration_s,
+                step_delay_ms,
+                initial_delay_ms,
+            ),
             name=f"session-{profile.name}",
         )
         return self.status()
@@ -107,17 +115,36 @@ class SessionEngine:
         max_actions: int,
         max_duration_s: int,
         step_delay_ms: int,
+        initial_delay_ms: int,
     ) -> None:
         stop_reason: StopReason | None = None
-        deadline = monotonic() + max_duration_s
         log.info(
-            "session start game=%s region=%s max_actions=%d max_duration_s=%d step_delay_ms=%d",
+            "session start game=%s region=%s max_actions=%d max_duration_s=%d step_delay_ms=%d initial_delay_ms=%d",
             profile.name,
             region,
             max_actions,
             max_duration_s,
             step_delay_ms,
+            initial_delay_ms,
         )
+
+        # Janela de "foque o jogo agora": pyautogui dispara na janela em foco;
+        # como o último clique foi em PlayIA, a tecla iria pro nosso próprio
+        # app sem este delay inicial. Interrupível por stop.
+        if initial_delay_ms > 0:
+            try:
+                await asyncio.wait_for(
+                    self._stop.wait(), timeout=initial_delay_ms / 1000.0
+                )
+                self._state.status = "stopped"
+                self._state.stop_reason = "user"
+                self._state.finished_at = datetime.now()
+                log.info("session abortada durante delay inicial")
+                return
+            except asyncio.TimeoutError:
+                pass
+
+        deadline = monotonic() + max_duration_s
 
         try:
             while True:

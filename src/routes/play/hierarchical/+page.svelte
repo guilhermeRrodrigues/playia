@@ -367,6 +367,13 @@
 			{/if}
 		</section>
 
+		<p class="focus-hint">
+			<strong>Antes de clicar Iniciar:</strong> foque a janela do jogo.
+			Depois clique Iniciar — você tem 3 segundos pra voltar pro jogo
+			antes da primeira tecla. Sem foco correto, as teclas vão pra
+			janela do PlayIA e nada acontece no jogo.
+		</p>
+
 		<div class="controls">
 			<button class="start" onclick={startSession} disabled={!canStart}>
 				{starting
@@ -614,6 +621,17 @@
 		margin: 0;
 		font-size: 0.85rem;
 		color: #6b7280;
+	}
+
+	.focus-hint {
+		margin: 1rem 0 0;
+		padding: 0.6rem 0.9rem;
+		background: #fef3c7;
+		border: 1px solid #fde68a;
+		border-radius: 6px;
+		font-size: 0.85rem;
+		color: #78350f;
+		line-height: 1.4;
 	}
 
 	.hint a {

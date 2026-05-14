@@ -88,6 +88,7 @@ class HierarchicalEngine:
         region: "Region | None",
         max_duration_s: int,
         target_fps: int = DEFAULT_MOTOR_FPS,
+        initial_delay_ms: int = 3000,
     ) -> HierarchicalState:
         if self.is_running():
             raise HSessionAlreadyRunningError(
@@ -115,11 +116,11 @@ class HierarchicalEngine:
         self._stop_event = asyncio.Event()
 
         self._motor_task = asyncio.create_task(
-            self._loop_motor(region, max_duration_s, target_fps),
+            self._loop_motor(region, max_duration_s, target_fps, initial_delay_ms),
             name=f"hsession-motor-{game_id}",
         )
         self._strategist_task = asyncio.create_task(
-            self._loop_strategist(region, goal),
+            self._loop_strategist(region, goal, initial_delay_ms),
             name=f"hsession-strategist-{game_id}",
         )
         log.info(
@@ -140,8 +141,24 @@ class HierarchicalEngine:
     # ---- loops ----
 
     async def _loop_motor(
-        self, region: "Region | None", max_duration_s: int, target_fps: int
+        self,
+        region: "Region | None",
+        max_duration_s: int,
+        target_fps: int,
+        initial_delay_ms: int,
     ) -> None:
+        # Janela pro usuário focar o jogo após clicar Iniciar; sem isso o
+        # primeiro key_press vai pra janela do PlayIA, que ficou em foco
+        # depois do clique do botão.
+        if initial_delay_ms > 0:
+            try:
+                await asyncio.wait_for(
+                    self._stop_event.wait(), timeout=initial_delay_ms / 1000.0
+                )
+                return  # user cancelou no delay
+            except asyncio.TimeoutError:
+                pass
+
         period = 1.0 / max(target_fps, 1)
         t0 = time.monotonic()
         next_tick = t0
@@ -250,8 +267,16 @@ class HierarchicalEngine:
             )
 
     async def _loop_strategist(
-        self, region: "Region | None", goal: str
+        self, region: "Region | None", goal: str, initial_delay_ms: int
     ) -> None:
+        if initial_delay_ms > 0:
+            try:
+                await asyncio.wait_for(
+                    self._stop_event.wait(), timeout=initial_delay_ms / 1000.0
+                )
+                return
+            except asyncio.TimeoutError:
+                pass
         try:
             while not self._stop_event.is_set():
                 try:

@@ -328,6 +328,13 @@
 		</div>
 	</section>
 
+	<p class="focus-hint">
+		<strong>Antes de clicar Iniciar:</strong> deixe a janela do jogo
+		(2048 no Chrome) visível e foque-a. Depois clique Iniciar — você
+		tem 3 segundos pra voltar a focar o jogo antes da primeira ação.
+		Sem isso, as teclas vão para a janela do PlayIA e o jogo não muda.
+	</p>
+
 	<div class="controls">
 		<button
 			class="start"
@@ -546,6 +553,17 @@
 		margin: 0;
 		font-size: 0.85rem;
 		color: #6b7280;
+	}
+
+	.focus-hint {
+		margin: 1rem 0 0;
+		padding: 0.6rem 0.9rem;
+		background: #fef3c7;
+		border: 1px solid #fde68a;
+		border-radius: 6px;
+		font-size: 0.85rem;
+		color: #78350f;
+		line-height: 1.4;
 	}
 
 	.anti-cheat-block {

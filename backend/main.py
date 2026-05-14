@@ -197,6 +197,16 @@ class StartSessionRequest(BaseModel):
     max_actions: int = Field(default=200, ge=1, le=10_000)
     max_duration_s: int = Field(default=600, ge=1, le=86_400)
     step_delay_ms: int = Field(default=300, ge=0, le=60_000)
+    initial_delay_ms: int = Field(
+        default=3000,
+        ge=0,
+        le=30_000,
+        description=(
+            "Pausa antes da primeira ação (default 3s). Dá tempo do "
+            "usuário focar a janela do jogo após clicar Iniciar — sem isso "
+            "as teclas vão pra janela do PlayIA."
+        ),
+    )
     acknowledge_ban_risk: str | None = Field(
         default=None,
         description=(
@@ -745,6 +755,12 @@ class StartHSessionRequest(BaseModel):
     )
     max_duration_s: int = Field(default=300, ge=1, le=86_400)
     target_fps: int = Field(default=30, ge=1, le=60)
+    initial_delay_ms: int = Field(
+        default=3000,
+        ge=0,
+        le=30_000,
+        description="Pausa antes da primeira ação. Dá tempo de focar o jogo após clicar Iniciar.",
+    )
     acknowledge_ban_risk: str | None = Field(
         default=None,
         description=(
@@ -858,6 +874,7 @@ async def hsession_start(body: StartHSessionRequest) -> HSessionStateResponse:
             region=region,
             max_duration_s=body.max_duration_s,
             target_fps=body.target_fps,
+            initial_delay_ms=body.initial_delay_ms,
         )
     except HSessionAlreadyRunningError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
@@ -1024,6 +1041,7 @@ async def session_start(body: StartSessionRequest) -> SessionStateResponse:
             max_actions=body.max_actions,
             max_duration_s=body.max_duration_s,
             step_delay_ms=body.step_delay_ms,
+            initial_delay_ms=body.initial_delay_ms,
         )
     except SessionAlreadyRunningError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
@@ -1032,10 +1050,11 @@ async def session_start(body: StartSessionRequest) -> SessionStateResponse:
         raise HTTPException(status_code=422, detail=str(e)) from e
 
     log.info(
-        "session/start game=%s region=%s max_actions=%d",
+        "session/start game=%s region=%s max_actions=%d initial_delay_ms=%d",
         body.game,
         body.region,
         body.max_actions,
+        body.initial_delay_ms,
     )
     return _serialize_state(state)
 
