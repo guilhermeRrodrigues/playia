@@ -91,6 +91,38 @@ class PyAutoGuiExecutor:
         except (OSError, PermissionError) as e:
             raise _wrap_oserror(f"key_tap({key!r})", e) from e
 
+    def key_press(self, key: str) -> None:
+        pyag_key = _translate_key(key)
+        try:
+            pyautogui.keyDown(pyag_key)
+        except pyautogui.FailSafeException as e:
+            raise ExecutorBlockedError(
+                "Failsafe acionado: mouse foi para um canto da tela e abortou."
+            ) from e
+        except (OSError, PermissionError) as e:
+            raise _wrap_oserror(f"key_press({key!r})", e) from e
+
+    def key_release(self, key: str) -> None:
+        pyag_key = _translate_key(key)
+        try:
+            pyautogui.keyUp(pyag_key)
+        except pyautogui.FailSafeException as e:
+            raise ExecutorBlockedError(
+                "Failsafe acionado: mouse foi para um canto da tela e abortou."
+            ) from e
+        except (OSError, PermissionError) as e:
+            raise _wrap_oserror(f"key_release({key!r})", e) from e
+
+    def mouse_move_rel(self, dx: int, dy: int) -> None:
+        try:
+            pyautogui.moveRel(dx, dy)
+        except pyautogui.FailSafeException as e:
+            raise ExecutorBlockedError(
+                "Failsafe acionado: mouse foi para um canto da tela e abortou."
+            ) from e
+        except (OSError, PermissionError) as e:
+            raise _wrap_oserror(f"mouse_move_rel({dx},{dy})", e) from e
+
     def click(self, x: int, y: int) -> None:
         try:
             pyautogui.click(x=x, y=y)
