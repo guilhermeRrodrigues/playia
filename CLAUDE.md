@@ -249,10 +249,17 @@ Antes de cada `git push`:
   SVG (sem CDN). Endpoints `/training/{start,status,cancel}`,
   `/motor-models[?game_id=]`, `/motor-models/{id}` (GET/DELETE),
   `/motor/test/{game_id}` (debug, 412 se sem motor).
-- **M7**: **Loop hierárquico runtime**. `strategist/` coordena VLM
-  (1-3 Hz) e motor model (ONNX, 30 Hz) em threads separados. Game
-  profile do 99 Nights incluído com aviso de Hyperion. Funciona em
-  Roblox Studio playtest local.
+- **M7** [concluído]: **Loop hierárquico runtime**. `strategist/`
+  coordena VLM estrategista (5-15s/decisão no Mac) e motor model ONNX
+  (30 Hz alvo, latência 5-20ms) em dois `asyncio.Task` cooperativos.
+  HierarchicalEngine com `_held_keys` faz diff por tick e emite
+  press/release no executor — cleanup CRÍTICO no finally libera todas
+  as teclas que ficaram seguradas. UI `/play/hierarchical` com tab
+  shared com /play, dropdown filtrado por (fast_realtime ∩
+  motor_available), banner red de acknowledge_ban_risk para anti-cheat,
+  intenção atual em destaque + histórico. Endpoints `/hsession/{start,
+  stop,status}`, `/motor/health/{game_id}`. Game profile do 99 Nights
+  e Chrome Dino já no DB; ban warning explícito.
 - **M8**: **Skill curation + self-reflection**. Episódios viram skills
   nomeadas; VLM invoca skills diretamente quando reconhece o cenário.
 - **M9**: **BYOK + Settings UI**. Multi-provider (Gemini, Groq, Claude,
@@ -488,10 +495,79 @@ Notas conhecidas:
 - Accuracy < 60% em qualquer dataset = sinal pra refazer a gravação
   ou aumentar `epochs`; o motor model funciona mas joga mal.
 
-## Loop hierárquico (M7 — virá)
+## Loop hierárquico (M7 — existe)
 
-Será `backend/strategist/`, coordenando VLM lento + motor rápido. Quando
-chegar lá, atualize esta seção com a arquitetura concreta.
+`backend/strategist/` é a nova frente: dois `asyncio.Task` cooperativos
+coordenam VLM estrategista (lento) + motor ONNX (rápido) sob o mesmo
+`asyncio.Event` de stop.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ hsession-strategist  (lento; ~0.05-0.1 Hz no Mac com qwen2.5vl) │
+│   while not stop:                                               │
+│     png = capture.grab(region)                                  │
+│     intention = await vlm_strategist.decide(png, goal, history) │
+│     state.current_intention = intention                         │
+│     append intentions_history (cap 50)                          │
+│     await wait_for(stop, intention.ttl_s)                       │
+└──────────────────────────┬──────────────────────────────────────┘
+                           │ Intention publicada (texto pt-br + ttl_s)
+                           ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ hsession-motor  (rápido; alvo 30 Hz; latência típica 5-20 ms)   │
+│   while not stop and elapsed < max_duration_s:                  │
+│     png = capture.grab(region)                                  │
+│     action = motor.predict(png)        # v0.1 NÃO usa intention │
+│     diff vs _held_keys → executor.key_press/key_release         │
+│     state.last_frame_b64 = b64(png); total_actions++            │
+│     await wait_for(stop, period - elapsed_tick)                 │
+│   finally:                                                      │
+│     executor.key_release(*_held_keys)  # CRÍTICO                │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+Módulo `backend/strategist/`:
+
+- `base.py` — `Intention(text, params, issued_at, ttl_s)` e
+  `HierarchicalState(status, game, region, motor_model_id,
+  motor_accuracy, current_intention, intentions_history,
+  actions_per_second, total_actions, last_frame_b64, ...)`.
+- `vlm_strategist.py` — `VLMStrategist.decide(png, goal, history)`
+  reusa `VLMProvider` com prompt focado em INTENÇÃO de alto nível
+  em pt-br + few-shots (Chrome Dino + survival). Parser tolerante
+  extrai primeiro `{...}` se vier com preâmbulo; `ttl_s` clampado em
+  `[2, 30]`.
+- `engine.py` — `HierarchicalEngine` com `start/stop/status`. Stop
+  via `asyncio.Event` mais `await asyncio.gather(motor_task,
+  strategist_task)`. FAILSAFE do pyautogui segue ativo.
+- `errors.py` — `HSessionAlreadyRunningError` (409),
+  `MotorNotTrainedError` (412), `StrategistError` (500).
+
+Endpoints (M7):
+| Método | Path | Descrição |
+|---|---|---|
+| POST | `/hsession/start` | `{game_id, region?, max_duration_s, target_fps, acknowledge_ban_risk?}` — 422 game desconhecido, 412 sem motor_model, 403 anti_cheat sem ack, 409 já roda. |
+| POST | `/hsession/stop` | idempotente; aguarda ambas as tasks via `asyncio.gather`. |
+| GET | `/hsession/status` | snapshot vivo + history. |
+| GET | `/motor/health/{game_id}` | sempre 200; payload `{game_exists, motor_available, motor_model_id?, accuracy?, onnx_size_bytes?, onnx_exists?, reason?}`. |
+
+UI: tab `/play` ↔ `/play/hierarchical`. Hierárquico mostra dropdown
+filtrado por (fast_realtime ∩ motor treinado), intenção atual em 1.4rem
+(verde), histórico das últimas 5 com timestamps, frame ao vivo e botão
+PARAR enorme. Anti-cheat → box vermelho com input texto exigindo
+exatamente "estou ciente do risco" antes de habilitar Iniciar (a
+mesma frase que o backend valida).
+
+**Simplificação v0.1**: `motor.predict()` recebe SÓ o frame; a intenção
+atual fica no state e nos logs mas não entra como input do modelo.
+Comentário explícito no `engine._loop_motor` marca onde plugar o
+condicionamento por texto quando isso entrar (M+). Para Chrome Dino o
+frame já carrega contexto suficiente.
+
+**Parâmetros típicos no Mac (qwen2.5vl:3b)**:
+- VLM strategist: 5-15s por intenção; ttl_s default 10s.
+- Motor: 5-20 ms por inferência CPU; target_fps default 30; FPS real
+  fica em 25-30 Hz quando o capture não é o gargalo.
 
 ## Referência rápida
 
