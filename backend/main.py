@@ -6,6 +6,7 @@ import json
 import logging
 import sys
 import time
+from datetime import datetime
 from typing import Any
 
 import uvicorn
@@ -16,6 +17,12 @@ from pydantic import BaseModel, Field, field_validator
 
 from capture.base import Region
 from capture.factory import get_capture
+from executor.factory import get_executor
+from planner.actions import Action
+from planner.factory import get_planner
+from session.base import SessionState
+from session.engine import SessionAlreadyRunningError, SessionEngine
+from session.games import GAMES, GameProfile
 from vision.errors import (
     VLMModelMissingError,
     VLMTimeoutError,
@@ -65,6 +72,9 @@ app.add_middleware(
 
 _capture = get_capture()
 _vlm = get_vlm()
+_planner = get_planner()
+_executor = get_executor()
+_engine = SessionEngine(_capture, _planner, _executor)
 
 DEFAULT_DESCRIBE_PROMPT = (
     "Descreva em português o que está acontecendo nesta tela. "
@@ -132,6 +142,67 @@ class VLMStatusResponse(BaseModel):
     ready: bool
     model: str
     issue: str | None
+
+
+class StartSessionRequest(BaseModel):
+    game: str
+    region: list[int] | None = Field(
+        default=None,
+        description="Recorte [x, y, largura, altura] do jogo na tela. None = tela inteira.",
+    )
+    max_actions: int = Field(default=200, ge=1, le=10_000)
+    max_duration_s: int = Field(default=600, ge=1, le=86_400)
+    step_delay_ms: int = Field(default=300, ge=0, le=60_000)
+
+    @field_validator("region")
+    @classmethod
+    def _validate_region(cls, v: list[int] | None) -> list[int] | None:
+        if v is None:
+            return None
+        if len(v) != 4:
+            raise ValueError("region deve ter 4 inteiros: [x, y, largura, altura]")
+        x, y, w, h = v
+        if w <= 0 or h <= 0:
+            raise ValueError("região com largura/altura <= 0 é inválida")
+        if x < 0 or y < 0:
+            raise ValueError("região com x/y negativos é inválida")
+        return v
+
+
+class SessionStateResponse(BaseModel):
+    """Espelho serializável de :class:`session.base.SessionState`."""
+
+    model_config = {"from_attributes": True}
+
+    status: str
+    game: str | None = None
+    region: list[int] | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    actions_taken: int = 0
+    last_action: Action | None = None
+    last_reason: str | None = None
+    history: list[Action] = Field(default_factory=list)
+    last_screenshot_b64: str | None = None
+    stop_reason: str | None = None
+    error: str | None = None
+
+
+def _serialize_state(state: SessionState) -> SessionStateResponse:
+    return SessionStateResponse(
+        status=state.status,
+        game=state.game,
+        region=list(state.region) if state.region else None,
+        started_at=state.started_at,
+        finished_at=state.finished_at,
+        actions_taken=state.actions_taken,
+        last_action=state.last_action,
+        last_reason=state.last_reason,
+        history=list(state.history),
+        last_screenshot_b64=state.last_screenshot_b64,
+        stop_reason=state.stop_reason,
+        error=state.error,
+    )
 
 
 @app.get("/health")
@@ -203,6 +274,49 @@ async def describe(body: DescribeRequest | None = None) -> DescribeResponse:
         latency_ms=latency_ms,
         model=_vlm.model,
     )
+
+
+@app.get("/session/games", response_model=dict[str, GameProfile])
+def session_games() -> dict[str, GameProfile]:
+    return GAMES
+
+
+@app.post("/session/start", response_model=SessionStateResponse)
+async def session_start(body: StartSessionRequest) -> SessionStateResponse:
+    region = _region_tuple(body.region) if body.region else None
+    try:
+        state = await _engine.start(
+            game=body.game,
+            region=region,
+            max_actions=body.max_actions,
+            max_duration_s=body.max_duration_s,
+            step_delay_ms=body.step_delay_ms,
+        )
+    except SessionAlreadyRunningError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    except ValueError as e:
+        # jogo desconhecido
+        raise HTTPException(status_code=422, detail=str(e)) from e
+
+    log.info(
+        "session/start game=%s region=%s max_actions=%d",
+        body.game,
+        body.region,
+        body.max_actions,
+    )
+    return _serialize_state(state)
+
+
+@app.post("/session/stop", response_model=SessionStateResponse)
+async def session_stop() -> SessionStateResponse:
+    state = await _engine.stop()
+    log.info("session/stop status=%s", state.status)
+    return _serialize_state(state)
+
+
+@app.get("/session/status", response_model=SessionStateResponse)
+def session_status() -> SessionStateResponse:
+    return _serialize_state(_engine.status())
 
 
 if __name__ == "__main__":
