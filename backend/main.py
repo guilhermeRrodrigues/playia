@@ -22,11 +22,14 @@ from capture.factory import get_capture
 from executor.factory import get_executor
 from memory.connection import get_connection
 from memory.migrations import apply_pending
-from memory.models import AntiCheat, Game, Tempo
-from memory.repos import games_repo
+from memory.models import AntiCheat, Game, Recording, Tempo
+from memory.paths import recordings_dir
+from memory.repos import games_repo, recordings_repo
 from memory.seeds import apply_seeds
 from planner.actions import Action
 from planner.factory import get_planner
+from recording.errors import RecorderBusyError, RecorderError, RecorderPermissionError
+from recording.factory import get_recorder
 from session.base import SessionState
 from session.engine import SessionAlreadyRunningError, SessionEngine
 from vision.errors import (
@@ -95,6 +98,7 @@ _vlm = get_vlm()
 _planner = get_planner()
 _executor = get_executor()
 _engine = SessionEngine(_capture, _planner, _executor)
+_recorder = get_recorder(_capture)
 
 DEFAULT_DESCRIBE_PROMPT = (
     "Descreva em português o que está acontecendo nesta tela. "
@@ -397,6 +401,177 @@ def games_delete(game_id: str) -> None:
             ),
         )
     games_repo.delete(conn, game_id)
+
+
+# --- /recording e /recordings (M5) -------------------------------------------
+
+
+class StartRecordingRequest(BaseModel):
+    game_id: str = Field(min_length=1)
+    fps: int = Field(default=30, ge=1, le=60)
+    region: list[int] | None = Field(
+        default=None,
+        description="Recorte [x, y, largura, altura] do jogo. None = tela inteira.",
+    )
+
+    @field_validator("region")
+    @classmethod
+    def _validate_region(cls, v: list[int] | None) -> list[int] | None:
+        if v is None:
+            return None
+        if len(v) != 4:
+            raise ValueError("region deve ter 4 inteiros: [x, y, largura, altura]")
+        x, y, w, h = v
+        if w <= 0 or h <= 0:
+            raise ValueError("região com largura/altura <= 0 é inválida")
+        if x < 0 or y < 0:
+            raise ValueError("região com x/y negativos é inválida")
+        return v
+
+
+class RecordingStatusResponse(BaseModel):
+    running: bool
+    recording_id: int | None = None
+    game_id: str | None = None
+    fps_target: int = 0
+    fps_real: float = 0.0
+    frames_captured: int = 0
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    region: list[int] | None = None
+    error: str | None = None
+
+
+def _serialize_recorder_status() -> RecordingStatusResponse:
+    s = _recorder.status()
+    return RecordingStatusResponse(
+        running=s.running,
+        recording_id=s.recording_id,
+        game_id=s.game_id,
+        fps_target=s.fps_target,
+        fps_real=s.fps_real,
+        frames_captured=s.frames_captured,
+        started_at=s.started_at,
+        finished_at=s.finished_at,
+        region=list(s.region) if s.region else None,
+        error=s.error,
+    )
+
+
+@app.post("/recording/start", response_model=RecordingStatusResponse)
+def recording_start(body: StartRecordingRequest) -> RecordingStatusResponse:
+    # valida jogo no DB antes de mexer no recorder; recordings.game_id é FK.
+    conn = get_connection()
+    if games_repo.get(conn, body.game_id) is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"jogo desconhecido: {body.game_id!r}",
+        )
+    region = _region_tuple(body.region) if body.region else None
+    try:
+        _recorder.start(game_id=body.game_id, fps=body.fps, region=region)
+    except RecorderBusyError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    except RecorderPermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
+    except RecorderError as e:
+        log.exception("erro do recorder no /recording/start")
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+    log.info(
+        "recording/start game=%s fps=%d region=%s",
+        body.game_id,
+        body.fps,
+        body.region,
+    )
+    return _serialize_recorder_status()
+
+
+@app.post("/recording/stop", response_model=RecordingStatusResponse)
+def recording_stop() -> RecordingStatusResponse:
+    _recorder.stop()
+    log.info("recording/stop")
+    return _serialize_recorder_status()
+
+
+@app.get("/recording/status", response_model=RecordingStatusResponse)
+def recording_status() -> RecordingStatusResponse:
+    return _serialize_recorder_status()
+
+
+@app.get("/recordings", response_model=list[Recording])
+def recordings_list(
+    game_id: str | None = Query(default=None),
+) -> list[Recording]:
+    conn = get_connection()
+    return recordings_repo.list_all(conn, game_id=game_id)
+
+
+class RecordingDetail(BaseModel):
+    recording: Recording
+    frames_dir: str
+
+
+@app.get("/recordings/{recording_id}", response_model=RecordingDetail)
+def recordings_get(recording_id: int) -> RecordingDetail:
+    conn = get_connection()
+    rec = recordings_repo.get(conn, recording_id)
+    if rec is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"gravação {recording_id} não encontrada",
+        )
+    return RecordingDetail(
+        recording=rec,
+        frames_dir=str(recordings_dir() / str(recording_id)),
+    )
+
+
+class DeleteRecordingRequest(BaseModel):
+    confirm: bool = False
+
+
+@app.delete("/recordings/{recording_id}", status_code=204)
+def recordings_delete(
+    recording_id: int, body: DeleteRecordingRequest | None = None
+) -> None:
+    if body is None or not body.confirm:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                'Envie {"confirm": true} no body para confirmar a remoção. '
+                "Frames em disco são apagados junto."
+            ),
+        )
+    conn = get_connection()
+    rec = recordings_repo.get(conn, recording_id)
+    if rec is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"gravação {recording_id} não encontrada",
+        )
+    if recordings_repo.has_motor_models(conn, recording_id):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"a gravação {recording_id} tem motor_models treinados em cima dela; "
+                f"apague-os primeiro pelo endpoint de motor models."
+            ),
+        )
+
+    # Ordem: DB primeiro (atômico via CASCADE em recording_frames), disco depois
+    # — orphan dir é detectável; orphan rows apontando pra disco apagado seria pior.
+    recordings_repo.delete(conn, recording_id)
+    rec_dir = recordings_dir() / str(recording_id)
+    if rec_dir.exists():
+        try:
+            for p in rec_dir.iterdir():
+                p.unlink(missing_ok=True)
+            rec_dir.rmdir()
+        except OSError:
+            log.exception(
+                "DB foi apagado mas falhou ao limpar disco %s", rec_dir
+            )
 
 
 @app.post("/session/start", response_model=SessionStateResponse)
