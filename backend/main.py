@@ -9,6 +9,7 @@ import sys
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import uvicorn
@@ -22,9 +23,9 @@ from capture.factory import get_capture
 from executor.factory import get_executor
 from memory.connection import get_connection
 from memory.migrations import apply_pending
-from memory.models import AntiCheat, Game, Recording, Tempo
-from memory.paths import recordings_dir
-from memory.repos import games_repo, recordings_repo
+from memory.models import AntiCheat, Game, MotorModel, Recording, Tempo
+from memory.paths import motor_models_dir, recordings_dir
+from memory.repos import games_repo, motor_models_repo, recordings_repo
 from memory.seeds import apply_seeds
 from planner.actions import Action
 from planner.factory import get_planner
@@ -599,6 +600,50 @@ def recordings_delete(
             log.exception(
                 "DB foi apagado mas falhou ao limpar disco %s", rec_dir
             )
+
+
+# --- /motor-models (M6) -------------------------------------------------------
+
+
+@app.get("/motor-models", response_model=list[MotorModel])
+def motor_models_list(
+    game_id: str | None = Query(default=None),
+) -> list[MotorModel]:
+    conn = get_connection()
+    if game_id is None:
+        return motor_models_repo.list_all(conn)
+    return motor_models_repo.list_by_game(conn, game_id)
+
+
+@app.get("/motor-models/{motor_id}", response_model=MotorModel)
+def motor_models_get(motor_id: int) -> MotorModel:
+    conn = get_connection()
+    m = motor_models_repo.get(conn, motor_id)
+    if m is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"motor model {motor_id} não encontrado",
+        )
+    return m
+
+
+@app.delete("/motor-models/{motor_id}", status_code=204)
+def motor_models_delete(motor_id: int) -> None:
+    conn = get_connection()
+    m = motor_models_repo.get(conn, motor_id)
+    if m is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"motor model {motor_id} não encontrado",
+        )
+    # DB primeiro, disco depois — orphan file é recuperável; orphan row seria pior.
+    onnx_path = Path(m.onnx_path) if m.onnx_path else None
+    motor_models_repo.delete(conn, motor_id)
+    if onnx_path is not None and onnx_path.exists():
+        try:
+            onnx_path.unlink(missing_ok=True)
+        except OSError:
+            log.exception("DB apagado mas falhou ao limpar ONNX %s", onnx_path)
 
 
 @app.post("/session/start", response_model=SessionStateResponse)
