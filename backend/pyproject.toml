@@ -10,3 +10,6 @@ dependencies = [
     "pillow>=12.2.0",
     "uvicorn[standard]>=0.46.0",
 ]
+
+[project.optional-dependencies]
+windows = ["dxcam>=0.0.5"]

@@ -8,7 +8,11 @@ import sys
 from typing import Any
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
+
+from capture.factory import get_capture
 
 HOST = "127.0.0.1"
 PORT = 8765
@@ -41,10 +45,31 @@ log = logging.getLogger("playia.backend")
 
 app = FastAPI(title="PlayIA Backend", version="0.1.0")
 
+# UI roda em http://localhost:1420 (Tauri dev) ou tauri://localhost (produção).
+# Em M1 liberamos qualquer origem local — restringir no M7 quando tivermos Settings.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origin_regex=r"^(https?|tauri)://(localhost|127\.0\.0\.1)(:\d+)?$",
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+_capture = get_capture()
+
 
 @app.get("/health")
 def health() -> dict[str, bool]:
     return {"ok": True}
+
+
+@app.post("/capture")
+def capture() -> Response:
+    try:
+        png = _capture.grab()
+    except Exception as e:
+        log.exception("falha ao capturar tela")
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    return Response(content=png, media_type="image/png")
 
 
 if __name__ == "__main__":
