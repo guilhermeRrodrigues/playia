@@ -82,9 +82,21 @@ class DescribeResponse(BaseModel):
     model: str
 
 
+class VLMStatusResponse(BaseModel):
+    ready: bool
+    model: str
+    issue: str | None
+
+
 @app.get("/health")
 def health() -> dict[str, bool]:
     return {"ok": True}
+
+
+@app.get("/vlm/status", response_model=VLMStatusResponse)
+async def vlm_status() -> VLMStatusResponse:
+    s = await _vlm.status()
+    return VLMStatusResponse(ready=s.ready, model=s.model, issue=s.issue)
 
 
 @app.post("/capture")
