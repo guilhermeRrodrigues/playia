@@ -8,11 +8,14 @@ dependencies = [
     "fastapi>=0.136.1",
     "httpx>=0.28",
     "mss>=10.2.0",
+    "onnx>=1.16",
+    "onnxruntime>=1.18",
     "pillow>=12.2.0",
     "platformdirs>=4.3",
     "pyautogui>=0.9.54",
     "pynput>=1.7",
     "sqlite-vec>=0.1.6",
+    "torch>=2.4",
     "uvicorn[standard]>=0.46.0",
 ]
 
