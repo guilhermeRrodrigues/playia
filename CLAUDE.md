@@ -131,7 +131,12 @@ PlayIA **NÃO PODE** ser usado em jogos multiplayer com anti-cheat
 - **M2** [concluído]: VLM local (Ollama Qwen2.5-VL) descrevendo a tela via
   `POST /describe`. Health-check em `GET /vlm/status`. `backend/vision/` segue
   o mesmo padrão Protocol + Factory + impl de `backend/capture/`.
-- **M3**: Loop fechado num jogo simples (Tetris web ou similar).
+- **M3** [concluído]: Loop fechado captura → planner (VLM decide) → executor
+  (pyautogui). Jogo alvo: 2048 (browser). Novos módulos `backend/executor/`,
+  `backend/planner/`, `backend/session/` seguem o mesmo padrão Protocol +
+  Factory + impl. Endpoints: `POST /session/start|stop`, `GET /session/status`,
+  `GET /session/games`. UI ganhou `/play` (controle da sessão) e `/inspect`
+  (debug do M2, ex-rota `/`).
 - **M4**: Memória episódica em SQLite-vec.
 - **M5**: Skill curation + self-reflection.
 - **M6**: Modo watch-me-play.
@@ -202,9 +207,68 @@ class VLMProvider(Protocol):
     async def status(self) -> VLMStatus: ...
 ```
 
-`decide()` entra no M3 quando o loop fechar. Implementações futuras
-(M7): `GeminiProvider`, `GroqProvider`, `ClaudeProvider`, `OpenAIProvider`,
-`OpenRouterProvider`.
+Implementações futuras (M7): `GeminiProvider`, `GroqProvider`,
+`ClaudeProvider`, `OpenAIProvider`, `OpenRouterProvider`.
+
+## Loop de jogo (M3)
+
+Três módulos novos, mesmo padrão Protocol + Factory + impl:
+
+- **`backend/executor/`** — input de teclado/mouse.
+  - `base.py`: `InputExecutor` Protocol (`key_tap`, `click`, `wait`).
+  - `pyautogui_impl.py`: default cross-platform. `FAILSAFE=True`, mapa
+    `_DOM_TO_PYAG` traduz `"ArrowUp"`/`"Space"`/`"Enter"` etc. para o
+    vocabulário do pyautogui. Erros: `ExecutorPermissionError` (mac sem
+    Accessibility, com mensagem prescritiva) e `ExecutorBlockedError`
+    (failsafe acionado).
+  - `directinput_impl.py`: stub para M+ (pydirectinput).
+  - `factory.py`: hoje sempre `PyAutoGuiExecutor`.
+
+- **`backend/planner/`** — decide a próxima ação a partir da tela.
+  - `actions.py`: `Action` pydantic (`kind`, `key`, `x`, `y`, `duration_ms`,
+    `reason`) + validação cruzada por kind + `parse_action_json` (extrai
+    primeiro `{...}` balanceado da resposta da VLM).
+  - `vlm_planner.py`: monta prompt em pt-br com objetivo, histórico,
+    `allowed_keys` e few-shots. Retry com correção se JSON inválido ou
+    tecla fora do vocabulário.
+  - `errors.py`: `PlannerError`/`PlannerParseError`/`PlannerNoActionError`.
+
+- **`backend/session/`** — orquestra o loop.
+  - `engine.py`: `SessionEngine` rodando em `asyncio.Task`. Stop via
+    `asyncio.Event` mata o loop em ≤1 ciclo. Limites hard: `max_actions`,
+    `max_duration_s`. `history` cap em 20. `last_screenshot_b64` guarda o
+    crop que a VLM acabou de ver.
+  - `base.py`: dataclass `SessionState` (status, game, region, last_action,
+    history, stop_reason, error…).
+  - `games.py`: dicionário `GAMES: dict[str, GameProfile]` — **ponto de
+    extensão** para novos jogos. Hoje só `"2048"`. Cada perfil tem
+    `name/url/goal/allowed_keys`.
+
+Loop em pseudo-código (`engine._run`):
+
+```
+while not stop.is_set():
+    png = capture.grab(region)
+    state.last_screenshot_b64 = b64(png)
+    action = await planner.decide(png, goal, history, allowed_keys)
+    history.append(action)            # cap 20
+    if action.kind == "stop": break
+    executor.dispatch(action)         # key_tap / click / wait
+    actions_taken += 1
+    await asyncio.wait_for(stop.wait(), step_delay_ms / 1000)
+```
+
+Captura aceita região (`grab(region)`) desde o M3 — `MssCapture` recorta
+via dict de monitor; `DxCamCapture` ainda ignora (TODO M8).
+
+Endpoints adicionados pelo M3 (todos em `backend/main.py`):
+
+| Método | Path | Descrição |
+|---|---|---|
+| GET | `/session/games` | catálogo `dict[str, GameProfile]` (hoje só 2048). |
+| POST | `/session/start` | inicia loop. 409 se já houver sessão; 422 se jogo desconhecido. |
+| POST | `/session/stop` | seta `asyncio.Event` (mata loop em ≤1 ciclo) e retorna estado. |
+| GET | `/session/status` | snapshot do `SessionState`, com `last_screenshot_b64`. |
 
 Configuração: arquivo `~/.playia/config.toml` + override via UI (Settings) — M7.
 
