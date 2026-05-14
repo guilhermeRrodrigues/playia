@@ -25,13 +25,16 @@ por usar este app fora do escopo acima.
 
 ## Status
 
-- **Marco 1** (atual): "Hello world arquitetural". App Tauri 2 +
-  sidecar Python FastAPI + captura de tela cross-platform funcionando
-  ponta a ponta. **Sem IA ainda.**
-- Próximos marcos (M2–M8): VLM local (Ollama Qwen2.5-VL), loop fechado
-  num jogo simples, memória episódica em SQLite-vec, skill curation,
-  modo watch-me-play, Settings + BYOK multi-provider, release v1.0 via
-  GitHub Actions com auto-update. Detalhes em `CLAUDE.md`.
+- **Marco 1**: "Hello world arquitetural". App Tauri 2 + sidecar
+  Python FastAPI + captura de tela cross-platform funcionando ponta a
+  ponta.
+- **Marco 2** (atual): A IA enxerga a tela. VLM local (Ollama +
+  `qwen2.5vl:7b`) descreve em português o que está acontecendo na
+  tela capturada. Continua stateless.
+- Próximos marcos (M3–M8): loop fechado num jogo simples, memória
+  episódica em SQLite-vec, skill curation, modo watch-me-play,
+  Settings + BYOK multi-provider, release v1.0 via GitHub Actions
+  com auto-update. Detalhes em `CLAUDE.md`.
 
 ## Stack
 
@@ -50,6 +53,8 @@ por usar este app fora do escopo acima.
 | Rust (rustup) | stable | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
 | uv | recente | `brew install uv` |
 | Python | 3.12 | `uv python install 3.12` |
+| Ollama | recente | `brew install ollama` (ou https://ollama.com/download) |
+| Modelo `qwen2.5vl:7b` | — | `ollama pull qwen2.5vl:7b` (~5GB) |
 
 Se você usa **zsh**, garanta que `~/.cargo/env` é sourceado no seu
 shell startup (a instalação do rustup só escreve em `~/.profile`, que
@@ -58,6 +63,28 @@ zsh ignora):
 ```sh
 echo '. "$HOME/.cargo/env"' >> ~/.zshrc
 ```
+
+### Setup do VLM (Ollama)
+
+A partir do M2 o app usa um VLM local (`qwen2.5vl:7b` via Ollama) para
+descrever a tela. Antes de rodar o app pela primeira vez:
+
+```sh
+# 1. Subir o daemon (deixe rodando em background, em outro terminal)
+ollama serve
+
+# 2. Baixar o modelo (~5GB; demora alguns minutos)
+ollama pull qwen2.5vl:7b
+
+# 3. Verificar tudo de uma vez
+bash scripts/setup-ollama.sh
+```
+
+O `setup-ollama.sh` detecta o SO, confirma que o daemon está respondendo
+em `:11434` e que o modelo está disponível. Sai com código `0` quando
+está tudo certo; `1` se o daemon estiver offline; `2` se o modelo
+faltar. O app abre normalmente sem o Ollama, mas mostra a IA como
+indisponível.
 
 ## Como rodar em dev
 
