@@ -155,6 +155,13 @@ class HierarchicalEngine:
 
                 try:
                     png = await asyncio.to_thread(self._capture.grab, region)
+                    # v0.1: motor.predict() recebe SÓ o frame; a intenção
+                    # atual fica em state.current_intention (publicada pelo
+                    # strategist em paralelo) mas não entra como input do
+                    # modelo. Para jogos simples como Chrome Dino o frame
+                    # carrega contexto suficiente. Quando o motor ganhar
+                    # condicionamento por texto (M+), basta plugar a
+                    # intention aqui — o schema dele já tem o slot.
                     action = await asyncio.to_thread(self._motor.predict, png)
                 except Exception as e:  # noqa: BLE001
                     log.exception("motor tick erro")
@@ -162,6 +169,25 @@ class HierarchicalEngine:
                     self._state.stop_reason = "error"
                     self._state.status = "error"
                     break
+
+                # log alinhando intenção atual e ação predita pra debug do
+                # acoplamento estrategista/motor durante teste manual.
+                if n_actions % 30 == 0:
+                    intention_text = (
+                        self._state.current_intention.text
+                        if self._state.current_intention is not None
+                        else "(sem intenção ainda)"
+                    )
+                    log.info(
+                        "motor tick=%d keys=%s click_l=%s click_r=%s "
+                        "intention=%r lat=%.1fms",
+                        n_actions,
+                        action.keys_down,
+                        action.click_left,
+                        action.click_right,
+                        intention_text,
+                        action.latency_ms,
+                    )
 
                 new_keys = set(action.keys_down)
                 released = self._held_keys - new_keys
