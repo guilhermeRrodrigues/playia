@@ -99,14 +99,43 @@ npm run tauri dev
 A primeira execução de `cargo` baixa e compila ~300 crates (alguns
 minutos). As próximas são incrementais e rápidas.
 
-### Permissão de gravação de tela no macOS
+### Permissões no macOS
 
-A primeira chamada de `/capture` no macOS pede permissão de **Screen
-Recording** para o Terminal/iTerm/IDE de onde você rodou. Autorize em:
+O macOS exige duas permissões manuais antes do app funcionar plenamente.
+Conceda para o **processo pai** do sidecar Python — em dev é tipicamente o
+seu terminal (Terminal.app, iTerm, VS Code, Warp); no app empacotado é o
+binário Tauri (`PlayIA.app`). Se trocar de terminal, a permissão precisa ser
+reconcedida.
+
+#### Screen Recording (a partir do M1)
+
+A primeira chamada de `/capture` pede permissão. Autorize em:
 
 > System Settings → Privacy & Security → Screen Recording
 
 Sem isso, `mss` devolve uma imagem preta.
+
+#### Accessibility (a partir do M3, modo Play)
+
+Quando a IA começar a apertar teclas / clicar (rota `/play`), o macOS exige
+**Accessibility**. Autorize em:
+
+> System Settings → Privacy & Security → Accessibility
+
+Adicione o mesmo app que rodou o `npm run tauri dev` (Terminal, iTerm, VS
+Code…) ou, na release empacotada, o `PlayIA.app`. Sem isso o `pyautogui`
+falha silenciosamente ou levanta `ExecutorPermissionError` com uma frase
+prescritiva — abra o painel `Status` em `/play` para vê-la.
+
+Dica: depois de conceder, **encerre completamente** o terminal e abra de
+novo. O macOS só relê a lista de Accessibility no startup do processo.
+
+#### Failsafe do pyautogui
+
+Sempre que uma sessão de Play estiver rodando, mover o mouse para o
+**canto superior esquerdo da tela** aborta imediatamente — `pyautogui`
+levanta `FailSafeException` e o engine marca a sessão como
+`status="error"` com `stop_reason="error"`. É o seu botão de pânico físico.
 
 ## Ambiente de desenvolvimento vs alvo
 
