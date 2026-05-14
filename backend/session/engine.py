@@ -17,13 +17,15 @@ from time import monotonic
 from capture.base import Region, ScreenCapture
 from executor.base import InputExecutor
 from executor.errors import ExecutorError
+from memory.connection import get_connection
+from memory.models import Game
+from memory.repos import games_repo
 from planner.actions import Action
 from planner.base import Planner
 from planner.errors import PlannerError, PlannerParseError
 from vision.errors import VLMError
 
 from .base import SessionState, StopReason
-from .games import GameProfile, get_profile
 
 log = logging.getLogger("playia.session")
 
@@ -67,10 +69,9 @@ class SessionEngine:
             raise SessionAlreadyRunningError(
                 "Já existe uma sessão em andamento. Pare a atual antes de iniciar outra."
             )
-        try:
-            profile = get_profile(game)
-        except KeyError as e:
-            raise ValueError(f"jogo desconhecido: {game!r}") from e
+        profile = games_repo.get(get_connection(), game)
+        if profile is None:
+            raise ValueError(f"jogo desconhecido: {game!r}")
 
         self._state.reset()
         self._state.status = "running"
@@ -101,7 +102,7 @@ class SessionEngine:
 
     async def _run(
         self,
-        profile: GameProfile,
+        profile: Game,
         region: Region | None,
         max_actions: int,
         max_duration_s: int,

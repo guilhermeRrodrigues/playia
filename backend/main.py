@@ -21,11 +21,13 @@ from capture.factory import get_capture
 from executor.factory import get_executor
 from memory.connection import get_connection
 from memory.migrations import apply_pending
+from memory.models import Game
+from memory.repos import games_repo
+from memory.seeds import apply_seeds
 from planner.actions import Action
 from planner.factory import get_planner
 from session.base import SessionState
 from session.engine import SessionAlreadyRunningError, SessionEngine
-from session.games import GAMES, GameProfile
 from vision.errors import (
     VLMModelMissingError,
     VLMTimeoutError,
@@ -65,11 +67,14 @@ log = logging.getLogger("playia.backend")
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    # Aplica migrations pendentes do SQLite no startup. Idempotente.
+    # Aplica migrations pendentes do SQLite + seeds idempotentes no startup.
     conn = get_connection()
     applied = apply_pending(conn)
     if applied:
         log.info("schema atualizado: migrations aplicadas %s", applied)
+    seeded = apply_seeds(conn)
+    if seeded:
+        log.info("seeds inseridos: games %s", seeded)
     yield
 
 
@@ -290,9 +295,15 @@ async def describe(body: DescribeRequest | None = None) -> DescribeResponse:
     )
 
 
-@app.get("/session/games", response_model=dict[str, GameProfile])
-def session_games() -> dict[str, GameProfile]:
-    return GAMES
+@app.get("/session/games", response_model=dict[str, Game])
+def session_games() -> dict[str, Game]:
+    """Lista games conhecidos, indexados pelo id (slug).
+
+    Mantido como dict-por-id por compat com o frontend M3; a partir de
+    M4.6, o endpoint canônico é :http:get:`/games` (lista plana).
+    """
+    conn = get_connection()
+    return {g.id: g for g in games_repo.list_all(conn)}
 
 
 @app.post("/session/start", response_model=SessionStateResponse)
