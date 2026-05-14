@@ -26,15 +26,34 @@
 		error: string | null;
 	};
 
-	type GameProfile = {
+	type Tempo = 'turn_based' | 'slow_realtime' | 'fast_realtime';
+	type AntiCheat =
+		| 'none'
+		| 'unknown'
+		| 'hyperion'
+		| 'eac'
+		| 'battleye'
+		| 'vanguard'
+		| 'other';
+
+	type Game = {
+		id: string;
 		name: string;
 		url: string;
-		goal: string;
+		tempo: Tempo;
+		anti_cheat: AntiCheat;
 		allowed_keys: string[];
+		goal: string;
+		notes: string | null;
+		created_at: string | null;
 	};
 
-	let games: Record<string, GameProfile> = $state({});
+	let games: Game[] = $state([]);
 	let selectedGame = $state('2048');
+	let selectedGameObj = $derived(games.find((g) => g.id === selectedGame) ?? null);
+	let antiCheatBlocked = $derived(
+		selectedGameObj !== null && selectedGameObj.anti_cheat !== 'none'
+	);
 
 	// region em campos separados pra evitar bind em array
 	let regionX = $state(0);
@@ -54,7 +73,9 @@
 
 	let pollHandle: ReturnType<typeof setInterval> | null = null;
 
-	const FETCH_GAMES = `${BACKEND}/session/games`;
+	// O modo turn-based (M3) só aceita games com tempo=turn_based.
+	// Filtramos no servidor para o dropdown não mostrar opções inválidas.
+	const FETCH_GAMES = `${BACKEND}/games?tempo=turn_based`;
 	const SESSION_STATUS = `${BACKEND}/session/status`;
 	const SESSION_START = `${BACKEND}/session/start`;
 	const SESSION_STOP = `${BACKEND}/session/stop`;
@@ -89,10 +110,9 @@
 				startError = humanizeError(res.status, await res.text());
 				return;
 			}
-			games = (await res.json()) as Record<string, GameProfile>;
-			const names = Object.keys(games);
-			if (names.length > 0 && !(selectedGame in games)) {
-				selectedGame = names[0];
+			games = (await res.json()) as Game[];
+			if (games.length > 0 && !games.find((g) => g.id === selectedGame)) {
+				selectedGame = games[0].id;
 			}
 		} catch (e) {
 			startError = `Backend offline: ${humanizeException(e)}`;
@@ -197,21 +217,35 @@
 	<section class="config" class:disabled={isRunning}>
 		<div class="row">
 			<label>
-				<span>Jogo</span>
+				<span>Jogo (apenas turn-based; outros tempos aguardam M7)</span>
 				<select bind:value={selectedGame} disabled={isRunning}>
-					{#each Object.keys(games) as g (g)}
-						<option value={g}>{games[g].name}</option>
+					{#each games as g (g.id)}
+						<option value={g.id}>{g.name}</option>
 					{/each}
 				</select>
 			</label>
 
-			{#if games[selectedGame]}
+			{#if selectedGameObj}
 				<p class="hint">
-					Abra <a href={games[selectedGame].url} target="_blank" rel="noreferrer"
-						>{games[selectedGame].url}</a
+					Abra <a href={selectedGameObj.url} target="_blank" rel="noreferrer"
+						>{selectedGameObj.url}</a
 					>
 					em outra janela e foque-a antes de iniciar.
 				</p>
+			{/if}
+
+			{#if antiCheatBlocked && selectedGameObj}
+				<aside class="anti-cheat-block" role="alert">
+					<strong>⚠ Sessão bloqueada — anti-cheat detectado</strong>
+					<p>
+						O jogo <code>{selectedGameObj.id}</code> tem
+						<code>anti_cheat={selectedGameObj.anti_cheat}</code>. Automação
+						detectada = ban da conta. A UI não libera bypass aqui; se
+						realmente quiser tentar, use a API
+						<code>POST /session/start</code> com
+						<code>acknowledge_ban_risk: "estou ciente do risco"</code>.
+					</p>
+				</aside>
 			{/if}
 		</div>
 
@@ -290,8 +324,18 @@
 	</section>
 
 	<div class="controls">
-		<button class="start" onclick={startSession} disabled={isRunning || starting}>
-			{starting ? 'Iniciando…' : isRunning ? 'Sessão em andamento' : 'Iniciar'}
+		<button
+			class="start"
+			onclick={startSession}
+			disabled={isRunning || starting || antiCheatBlocked || games.length === 0}
+		>
+			{starting
+				? 'Iniciando…'
+				: isRunning
+					? 'Sessão em andamento'
+					: antiCheatBlocked
+						? 'Bloqueado (anti-cheat)'
+						: 'Iniciar'}
 		</button>
 		<button class="stop" onclick={stopSession} disabled={!isRunning || stopping}>
 			{stopping ? 'PARANDO…' : 'PARAR'}
@@ -467,6 +511,36 @@
 		margin: 0;
 		font-size: 0.85rem;
 		color: #6b7280;
+	}
+
+	.anti-cheat-block {
+		margin-top: 0.5rem;
+		padding: 0.75rem 1rem;
+		background: #7f1d1d;
+		color: #fef2f2;
+		border-radius: 8px;
+		line-height: 1.4;
+		font-size: 0.9rem;
+	}
+
+	.anti-cheat-block strong {
+		display: block;
+		font-size: 0.95rem;
+		margin-bottom: 0.4rem;
+		letter-spacing: 0.04em;
+	}
+
+	.anti-cheat-block p {
+		margin: 0;
+		color: #fef2f2;
+	}
+
+	.anti-cheat-block code {
+		background: #450a0a;
+		color: #fecaca;
+		padding: 0.05rem 0.35rem;
+		border-radius: 4px;
+		font-size: 0.8rem;
 	}
 
 	.controls {
