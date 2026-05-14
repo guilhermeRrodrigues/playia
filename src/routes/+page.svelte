@@ -65,7 +65,7 @@
 
 	function humanizeError(status: number, text: string): string {
 		if (status === 503) return 'Ollama não está rodando. Rode `ollama serve` em outro terminal.';
-		if (status === 404) return 'Modelo VLM não baixado. Rode `ollama pull qwen2.5vl:7b`.';
+		if (status === 404) return 'Modelo VLM não baixado. Rode `ollama pull qwen2.5vl:3b`.';
 		if (status === 504) return 'A IA demorou demais para responder (>60s). Tente de novo.';
 		// Tenta extrair detail do JSON do FastAPI.
 		try {

@@ -1,7 +1,8 @@
 """Provider VLM via Ollama (HTTP local em :11434).
 
 Comunica com o endpoint `/api/generate` do Ollama enviando a tela em
-PNG-base64 no campo `images`. Modelo padrão: `qwen2.5vl:7b`.
+PNG-base64 no campo `images`. Modelo padrão: `qwen2.5vl:3b` (cabe inteiro
+na GPU em Apple Silicon 16GB; o 7b spilla pro CPU e fica inviável).
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ class OllamaProvider:
 
     def __init__(
         self,
-        model: str = "qwen2.5vl:7b",
+        model: str = "qwen2.5vl:3b",
         host: str = "http://127.0.0.1:11434",
         timeout_s: float = 60.0,
     ) -> None:
@@ -61,7 +62,7 @@ class OllamaProvider:
 
         if resp.status_code == 404:
             # 404 do Ollama quando o modelo não está baixado:
-            # body costuma ser {"error":"model 'qwen2.5vl:7b' not found, try ..."}
+            # body costuma ser {"error":"model 'qwen2.5vl:3b' not found, try ..."}
             body = _safe_json(resp)
             err = (body.get("error") or "").lower() if isinstance(body, dict) else ""
             if "model" in err or "not found" in err:

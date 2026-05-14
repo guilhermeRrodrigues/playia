@@ -29,7 +29,7 @@ por usar este app fora do escopo acima.
   Python FastAPI + captura de tela cross-platform funcionando ponta a
   ponta.
 - **Marco 2** (atual): A IA enxerga a tela. VLM local (Ollama +
-  `qwen2.5vl:7b`) descreve em português o que está acontecendo na
+  `qwen2.5vl:3b`) descreve em português o que está acontecendo na
   tela capturada. Continua stateless.
 - Próximos marcos (M3–M8): loop fechado num jogo simples, memória
   episódica em SQLite-vec, skill curation, modo watch-me-play,
@@ -54,7 +54,7 @@ por usar este app fora do escopo acima.
 | uv | recente | `brew install uv` |
 | Python | 3.12 | `uv python install 3.12` |
 | Ollama | recente | `brew install ollama` (ou https://ollama.com/download) |
-| Modelo `qwen2.5vl:7b` | — | `ollama pull qwen2.5vl:7b` (~5GB) |
+| Modelo `qwen2.5vl:3b` | — | `ollama pull qwen2.5vl:3b` (~3GB) |
 
 Se você usa **zsh**, garanta que `~/.cargo/env` é sourceado no seu
 shell startup (a instalação do rustup só escreve em `~/.profile`, que
@@ -66,15 +66,15 @@ echo '. "$HOME/.cargo/env"' >> ~/.zshrc
 
 ### Setup do VLM (Ollama)
 
-A partir do M2 o app usa um VLM local (`qwen2.5vl:7b` via Ollama) para
+A partir do M2 o app usa um VLM local (`qwen2.5vl:3b` via Ollama) para
 descrever a tela. Antes de rodar o app pela primeira vez:
 
 ```sh
 # 1. Subir o daemon (deixe rodando em background, em outro terminal)
 ollama serve
 
-# 2. Baixar o modelo (~5GB; demora alguns minutos)
-ollama pull qwen2.5vl:7b
+# 2. Baixar o modelo (~3GB; alguns minutos)
+ollama pull qwen2.5vl:3b
 
 # 3. Verificar tudo de uma vez
 bash scripts/setup-ollama.sh

@@ -57,7 +57,9 @@ nunca improvise um "funciona no Mac, deve funcionar no Windows" sem evidência.
 - **HTTP client**: `httpx` (async) para falar com providers de VLM/LLM.
 - **Captura de tela**: `dxcam` (Windows, 240+ FPS). Fallback `mss`.
 - **Input**: `pyautogui` (+ `pydirectinput` para jogos AAA com DirectInput).
-- **VLM padrão**: Ollama + `qwen2.5vl:7b` (local, gratuito, offline).
+- **VLM padrão**: Ollama + `qwen2.5vl:3b` (local, gratuito, offline; cabe
+  inteiro na GPU em Apple Silicon 16GB. O 7b spilla pro CPU e fica
+  inviável — 120s/descrição na máquina de dev).
 - **BYOK opcional**: Gemini, Groq, Claude API, OpenAI, OpenRouter via UI.
 - **Memória**: SQLite + `sqlite-vec` (arquivo único `playia.db`).
 - **Embeddings**: `sentence-transformers/all-MiniLM-L6-v2` local.
@@ -148,7 +150,7 @@ Trabalhe um marco por vez. Não pule.
 
 ## Como rodar em dev
 
-Pré-requisito do M2 em diante: Ollama instalado + `qwen2.5vl:7b` baixado.
+Pré-requisito do M2 em diante: Ollama instalado + `qwen2.5vl:3b` baixado.
 Rode `bash scripts/setup-ollama.sh` para validar antes de subir o app.
 
 ```bash
