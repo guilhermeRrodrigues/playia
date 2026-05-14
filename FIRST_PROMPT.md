@@ -11,7 +11,19 @@ então já conhece a stack (Tauri 2 + SvelteKit + sidecar Python + Ollama + sqli
 a política de commits (Conventional Commits em português, push direto na main
 sempre que terminar uma unidade de trabalho) e o roadmap (8 marcos).
 
-Objetivo desta sessão: entregar o **Marco 1 (M1)** completo e funcionando.
+**Contexto de ambiente (importante):** Estou desenvolvendo em macOS arm64
+(Apple Silicon). O alvo de produção é Windows. Eu testo funcionalmente
+baixando o `.exe` da release no GitHub — não rodo o app nativamente no Mac
+para validar features Windows-only. Portanto, no Mac queremos que o app
+**rode e compile**, mesmo que algumas features usem fallback (mss em vez
+de dxcam, pyautogui em vez de pydirectinput). A validação final acontece
+no CI (`windows-latest` via `tauri-action`) e na máquina Windows quando eu
+baixar o instalador. Veja a seção "Ambiente de desenvolvimento vs alvo"
+do CLAUDE.md.
+
+Objetivo desta sessão: entregar o **Marco 1 (M1)** completo e funcionando
+**no Mac**, com abstrações cross-platform já no lugar para que a versão
+Windows funcione idêntica quando eu gerar a release.
 
 M1 = "Hello world arquitetural":
 - App Tauri 2 abre em janela própria.
@@ -35,16 +47,27 @@ Sub-tarefas que eu sugiro (você pode ajustar):
    - Endpoint `GET /health` retornando `{"ok": true}`.
    - **Commit + push** ("feat: backend FastAPI com endpoint health").
 
-3. Captura de tela com dxcam.
-   - Endpoint `POST /capture` retorna PNG.
-   - Tratamento de erro se dxcam falhar (logar e devolver 500 com mensagem).
-   - **Commit + push** ("feat: captura de tela via dxcam").
+3. Captura de tela cross-platform com Protocol/factory.
+   - Estrutura: `backend/capture/base.py` define o `Protocol ScreenCapture`
+     (método `grab() -> bytes` retornando PNG).
+   - `backend/capture/mss_impl.py` implementa via `mss` (macOS/Linux). **Esta
+     é a implementação usada no dev no meu Mac.**
+   - `backend/capture/dxcam_impl.py` implementa via `dxcam` (Windows only).
+     Pode ficar com um stub mínimo + `# TODO(windows-only)` se a lib não
+     instalar no Mac — não tente forçar instalação cross-platform.
+   - `backend/capture/factory.py` escolhe baseado em `sys.platform`.
+   - Endpoint `POST /capture` consome o factory.
+   - Tratamento de erro: log estruturado + 500 com mensagem clara.
+   - Teste manual: rodar no Mac e ver um PNG sair.
+   - **Commit + push** ("feat: captura cross-platform com factory mss/dxcam").
 
 4. Sidecar wiring no Tauri.
-   - Adicionar binário Python como sidecar no `tauri.conf.json`
-     (por enquanto sem PyInstaller — apontar para o python.exe do venv).
-   - Em `src-tauri/src/main.rs`, fazer `spawn` do sidecar no startup.
-   - Ao fechar o app, matar o processo do sidecar.
+   - Adicionar Python como sidecar no `tauri.conf.json` (por enquanto sem
+     PyInstaller — apontar para o `python` do venv do projeto, com path
+     relativo ao repo).
+   - Em `src-tauri/src/main.rs`, `spawn` do sidecar no startup do app.
+   - Ao fechar o app, matar o processo do sidecar (cleanup limpo).
+   - Funcionar no Mac (`npm run tauri dev` abre janela + sidecar sobe + porta 8765 responde).
    - **Commit + push** ("feat: tauri spawna sidecar python no startup").
 
 5. UI SvelteKit consumindo a API.
@@ -68,9 +91,14 @@ Regras importantes para esta sessão:
 
 - **Stack é a do CLAUDE.md**. Se quiser trocar algo (ex: SvelteKit por React),
   pergunte primeiro com um motivo concreto.
+- **Cross-platform por default**. Dev é Mac, alvo é Windows. Toda dependência
+  específica de SO entra atrás de um Protocol/factory. Veja a seção "Ambiente
+  de desenvolvimento vs alvo" do CLAUDE.md.
 - **Commits pequenos**, um por sub-tarefa. Push após cada commit.
-- **Antes de cada push**, rode o build relevante (`cargo check`, `npm run build`,
-  `python -m compileall backend`) e confirme que passa.
+- **Antes de cada push**, rode o build relevante no Mac (`cargo check`,
+  `npm run build`, `python -m compileall backend`) e confirme que passa.
+  Não tente rodar `cargo check --target x86_64-pc-windows-msvc` agora —
+  isso fica para o CI.
 - **Não inclua IA ainda**. Sem Ollama, sem VLM, sem prompt engineering.
   M1 é só o esqueleto.
 - **Mensagens de commit em português** seguindo Conventional Commits.
@@ -82,8 +110,11 @@ build passa, faça o commit + push, e vá para a 2. Pergunte antes de tomar
 decisões grandes (ex: gerenciador de pacotes Python — uv vs poetry — me
 consulte; em coisas menores, decida você).
 
-Se algo bloquear (ex: dxcam não instala porque é Windows-only e você está em
-Linux/Mac), pare e me avise — não improvise alternativas silenciosamente.
+Se algo bloquear, pare e me avise — não improvise alternativas silenciosamente.
+Caso específico: se `dxcam` falhar na instalação no Mac (esperado, é Windows-only),
+deixe a importação opcional dentro de `dxcam_impl.py` (try/except no import,
+levantando `NotImplementedError` se chamado fora de Windows) e siga em frente.
+Isso é esperado, não é blocker.
 ```
 
 ---

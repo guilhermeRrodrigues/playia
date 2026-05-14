@@ -15,6 +15,40 @@ Memória persistente faz com que a IA melhore entre sessões e entre jogos.
 
 Distribuído como instalador `.exe` via GitHub Releases (auto-update embutido).
 
+## Ambiente de desenvolvimento vs alvo — LEIA ANTES DE QUALQUER COISA
+
+- **Desenvolvimento**: macOS (arm64, Apple Silicon). É onde o código é escrito,
+  os testes unitários rodam, o build do Tauri (cargo + npm) é validado.
+- **Alvo de produção**: Windows. É onde o app é instalado e usado de verdade.
+- **Como o usuário testa funcionalmente**: baixando a release `.exe` no GitHub
+  Releases e rodando no Windows. O usuário **não roda o app nativamente no Mac**
+  para testar features Windows-only (captura DirectX, controle DirectInput, etc).
+
+Consequências práticas:
+
+1. **Use abstrações cross-platform por padrão.** Toda funcionalidade dependente
+   de SO precisa ter implementação `win32` E uma `darwin`/`linux` que pelo menos
+   não quebre o app em dev.
+   - Captura: `dxcam` (Windows) + `mss` (macOS/Linux) atrás de um Protocol.
+   - Input: `pydirectinput` (Windows) + `pyautogui` (macOS/Linux) atrás de um Protocol.
+   - Caminhos do usuário: use `platformdirs`, nunca string hardcoded.
+2. **Não trave o desenvolvimento esperando Windows.** Faça stub/fallback que rode
+   no Mac, e marque com `# TODO(windows-only)` ou um teste skipado o que precisar
+   de validação real lá.
+3. **CI roda em `windows-latest`** (via `tauri-action`) — é a fonte da verdade
+   para "isso funciona em produção". O Mac é fonte de verdade para "isso compila
+   e a arquitetura está sã".
+4. **Antes de cortar release**, rode pelo menos `cargo check --target x86_64-pc-windows-msvc`
+   localmente (precisa do toolchain Windows no rustup) ou confie no CI.
+5. **Quando uma feature for fundamentalmente Windows-only** (ex: hook em DirectX
+   overlay), documente isso explicitamente no código e no README, e implemente
+   o fallback no Mac como "modo demo" — capturar via mss e logar um aviso.
+6. **Releases**: tag `vX.Y.Z` no Mac → GitHub Actions builda no `windows-latest`
+   → instalador NSIS aparece no Releases → usuário baixa e instala no Windows.
+
+Se algo só puder ser validado em Windows e bloquear o avanço, **pare e avise** —
+nunca improvise um "funciona no Mac, deve funcionar no Windows" sem evidência.
+
 ## Stack obrigatória (não desviar sem discutir)
 
 - **UI**: Tauri 2 (Rust shell + WebView2). Frontend em **SvelteKit**.
