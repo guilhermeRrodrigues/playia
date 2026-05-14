@@ -226,9 +226,18 @@ Antes de cada `git push`:
   Seeds idempotentes: 2048, chrome-dino, 99-nights-in-the-forest.
   CRUD `/games` na UI com badge vermelho de anti-cheat. Gate de
   `tempo`/`anti_cheat` no `/session/start`.
-- **M5**: **Watch-me-play recording engine**. Captura simultânea de
-  frame (15-30 Hz) + inputs do usuário via `pynput`. Grava em SQLite +
-  PNG em disco. UI: rec/stop/listar sessões/preview.
+- **M5** [concluído]: **Watch-me-play recording engine**. Captura
+  simultânea de frame (15-30 Hz) + inputs do usuário via `pynput` em
+  threads dedicadas (kb listener, mouse listener, capture loop).
+  Frames como PNG em
+  `<user_data>/PlayIA/data/recordings/<rec_id>/<ts_ms>.png`; linhas em
+  `recording_frames` via `insert_many` em batch (~1 batch/s). UI
+  `/record` com botão GRAVAR / PARAR pulsante, FPS real, frames
+  capturados, tamanho em MB e lista de gravações. Endpoints
+  `/recording/start|stop|status`, `/recordings`, `/recordings/{id}`,
+  `DELETE /recordings/{id}` (body `{"confirm": true}` obrigatório, 409
+  se houver motor_models treinados). macOS exige Input Monitoring
+  (separado de Accessibility) — documentado no README.
 - **M6**: **Behavioral cloning trainer**. PyTorch CNN policy network
   treinada na sessão gravada. Output ONNX salvo em
   `<user_data>/PlayIA/data/motor_models/<game_id>/<recording_id>.onnx`.
@@ -378,6 +387,44 @@ Endpoints CRUD do catálogo (M4):
 | POST | `/games` | cria; 409 em id/nome conflitante; id é slug `^[a-z0-9][a-z0-9-]*$`. |
 | PUT | `/games/{id}` | atualiza. |
 | DELETE | `/games/{id}` | apaga; **409 se houver `recordings` ou `motor_models` associados** (`games_repo.has_dependents` antecipa a mensagem antes do FK RESTRICT). |
+
+## Watch-me-play (M5 — existe)
+
+Módulo `backend/recording/` no padrão da casa:
+
+- `base.py` — `Recorder` Protocol + `RecordingStatus` dataclass
+  (running, recording_id, fps_real, frames_captured, started_at,
+  finished_at, region, error).
+- `pynput_impl.py` — `PynputRecorder` orquestra 3 threads:
+  `pynput.keyboard.Listener` e `pynput.mouse.Listener` mantêm
+  snapshot protegido por lock; thread dedicada `recorder-<id>` faz o
+  loop de captura (grab → escreve PNG → buffer → `insert_many` cada
+  `BATCH_SIZE=30` frames).
+- `factory.py` — `get_recorder(capture)` → `PynputRecorder`.
+- `errors.py` — `RecorderBusyError`, `RecorderPermissionError`.
+
+`recordings_repo` e `recording_frames_repo` são ativos (no
+`memory/repos/`). Cada thread usa sua conexão SQLite (thread-local).
+
+Endpoints (M5):
+| Método | Path | Descrição |
+|---|---|---|
+| POST | `/recording/start` | body `{game_id, fps, region?}`. 422 se game desconhecido; 409 `RecorderBusyError`; 403 `RecorderPermissionError`. |
+| POST | `/recording/stop` | idempotente. |
+| GET | `/recording/status` | snapshot vivo do `RecordingStatus`. |
+| GET | `/recordings` | `list[{recording, disk_size_bytes}]`, filtro `?game_id=`. |
+| GET | `/recordings/{id}` | detalhe + `frames_dir` absoluto. |
+| DELETE | `/recordings/{id}` | exige body `{"confirm": true}` (400 se faltar); 409 com motor_models; ordem DB→disco. |
+
+UI `/record` (Svelte 5): dropdown de games (qualquer tempo), FPS
+input (1-60), toggle de região, botão verde GRAVAR / vermelho PARAR
+pulsante, métricas live (FPS real, frames, tempo decorrido, rec_id),
+painel lateral com lista de gravações + apagar.
+
+Permissões macOS: além de Accessibility (pyautogui para Play),
+`pynput` precisa de **Input Monitoring** em System Settings → Privacy
+& Security. Sem isso, a gravação roda mas `keys_down=[]` — diagnóstico
+documentado no README.
 
 ## Loop hierárquico (M7 — virá)
 
