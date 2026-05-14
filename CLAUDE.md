@@ -54,6 +54,7 @@ nunca improvise um "funciona no Mac, deve funcionar no Windows" sem evidência.
 - **UI**: Tauri 2 (Rust shell + WebView2). Frontend em **SvelteKit**.
 - **Backend IA**: sidecar Python (PyInstaller-frozen no release).
 - **IPC**: HTTP local (FastAPI no sidecar) entre Tauri e Python.
+- **HTTP client**: `httpx` (async) para falar com providers de VLM/LLM.
 - **Captura de tela**: `dxcam` (Windows, 240+ FPS). Fallback `mss`.
 - **Input**: `pyautogui` (+ `pydirectinput` para jogos AAA com DirectInput).
 - **VLM padrão**: Ollama + `qwen2.5vl:7b` (local, gratuito, offline).
@@ -124,8 +125,10 @@ PlayIA **NÃO PODE** ser usado em jogos multiplayer com anti-cheat
 
 ## Marcos (roadmap)
 
-- **M1**: Tauri app + sidecar Python que captura a tela e mostra na UI.
-- **M2**: VLM local (Ollama Qwen2.5-VL) descrevendo a tela.
+- **M1** [concluído]: Tauri app + sidecar Python que captura a tela e mostra na UI.
+- **M2** [concluído]: VLM local (Ollama Qwen2.5-VL) descrevendo a tela via
+  `POST /describe`. Health-check em `GET /vlm/status`. `backend/vision/` segue
+  o mesmo padrão Protocol + Factory + impl de `backend/capture/`.
 - **M3**: Loop fechado num jogo simples (Tetris web ou similar).
 - **M4**: Memória episódica em SQLite-vec.
 - **M5**: Skill curation + self-reflection.
@@ -145,16 +148,23 @@ Trabalhe um marco por vez. Não pule.
 
 ## Como rodar em dev
 
-```bash
-# Terminal 1: backend Python
-cd backend
-uv venv && source .venv/bin/activate  # ou python -m venv
-uv pip install -e .
-python main.py  # FastAPI em http://127.0.0.1:8765
+Pré-requisito do M2 em diante: Ollama instalado + `qwen2.5vl:7b` baixado.
+Rode `bash scripts/setup-ollama.sh` para validar antes de subir o app.
 
-# Terminal 2: app Tauri
+```bash
+# Em outro terminal, daemon do VLM:
+ollama serve
+
+# App (Tauri spawna o sidecar Python automaticamente):
 npm install
 npm run tauri dev
+```
+
+Para subir só o backend sem Tauri:
+
+```bash
+cd backend
+uv run python main.py  # FastAPI em http://127.0.0.1:8765
 ```
 
 (Comandos exatos vão evoluir — atualize esta seção quando mudarem.)
@@ -174,18 +184,27 @@ Detalhes em `docs/memory-model.md` (criar no M4).
 
 ## Provedores de IA
 
-Abstração em `backend/vision/providers.py`. Interface mínima:
+Abstração em `backend/vision/` (padrão idêntico a `backend/capture/`):
+
+- `vision/base.py` — `VLMProvider` Protocol + `VLMStatus` dataclass.
+- `vision/factory.py` — `get_vlm()` (hoje sempre Ollama; multi-provider no M7).
+- `vision/ollama_impl.py` — `OllamaProvider` via `httpx` async.
+- `vision/errors.py` — `VLMUnavailableError`/`ModelMissing`/`Timeout`.
+
+Interface mínima atual (M2):
 
 ```python
 class VLMProvider(Protocol):
-    async def describe(self, image: bytes, prompt: str) -> str: ...
-    async def decide(self, image: bytes, context: str) -> Action: ...
+    model: str
+    async def describe(self, image_png: bytes, prompt: str) -> str: ...
+    async def status(self) -> VLMStatus: ...
 ```
 
-Implementações iniciais: `OllamaProvider`, `GeminiProvider`, `GroqProvider`,
-`ClaudeProvider`, `OpenAIProvider`, `OpenRouterProvider`.
+`decide()` entra no M3 quando o loop fechar. Implementações futuras
+(M7): `GeminiProvider`, `GroqProvider`, `ClaudeProvider`, `OpenAIProvider`,
+`OpenRouterProvider`.
 
-Configuração: arquivo `~/.playia/config.toml` + override via UI (Settings).
+Configuração: arquivo `~/.playia/config.toml` + override via UI (Settings) — M7.
 
 ## Referência rápida
 
