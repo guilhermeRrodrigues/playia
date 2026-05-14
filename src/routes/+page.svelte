@@ -14,6 +14,11 @@
 			<p>Loop fechado: a IA vê a tela e joga sozinha um jogo simples (2048 no M3).</p>
 			<span class="cta">Iniciar →</span>
 		</a>
+		<a class="card record" href="/record">
+			<h2>Gravar</h2>
+			<p>Watch-me-play: a IA observa você jogando e salva o dataset pra treinar (M5).</p>
+			<span class="cta">Abrir →</span>
+		</a>
 		<a class="card games" href="/games">
 			<h2>Jogos</h2>
 			<p>Catálogo persistente. Tempo (turn-based / realtime) e flag de anti-cheat.</p>
@@ -27,7 +32,7 @@
 	</div>
 
 	<footer>
-		<small>M4 — memória SQLite persistente. Próximo: gravação de sessões (M5).</small>
+		<small>M5 — gravação watch-me-play. Próximo: behavioral cloning trainer (M6).</small>
 	</footer>
 </main>
 
@@ -67,11 +72,11 @@
 
 	.cards {
 		display: grid;
-		grid-template-columns: repeat(3, 1fr);
+		grid-template-columns: repeat(4, 1fr);
 		gap: 1rem;
 	}
 
-	@media (max-width: 900px) {
+	@media (max-width: 1100px) {
 		.cards {
 			grid-template-columns: 1fr 1fr;
 		}
@@ -105,6 +110,10 @@
 
 	.card.play h2 {
 		color: #047857;
+	}
+
+	.card.record h2 {
+		color: #b91c1c;
 	}
 
 	.card.games h2 {

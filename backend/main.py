@@ -499,17 +499,43 @@ def recording_status() -> RecordingStatusResponse:
     return _serialize_recorder_status()
 
 
-@app.get("/recordings", response_model=list[Recording])
+def _recording_disk_size_bytes(recording_id: int) -> int:
+    rec_dir = recordings_dir() / str(recording_id)
+    if not rec_dir.exists():
+        return 0
+    total = 0
+    for p in rec_dir.iterdir():
+        try:
+            total += p.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+class RecordingSummary(BaseModel):
+    recording: Recording
+    disk_size_bytes: int
+
+
+@app.get("/recordings", response_model=list[RecordingSummary])
 def recordings_list(
     game_id: str | None = Query(default=None),
-) -> list[Recording]:
+) -> list[RecordingSummary]:
     conn = get_connection()
-    return recordings_repo.list_all(conn, game_id=game_id)
+    recs = recordings_repo.list_all(conn, game_id=game_id)
+    return [
+        RecordingSummary(
+            recording=r,
+            disk_size_bytes=_recording_disk_size_bytes(r.id) if r.id else 0,
+        )
+        for r in recs
+    ]
 
 
 class RecordingDetail(BaseModel):
     recording: Recording
     frames_dir: str
+    disk_size_bytes: int
 
 
 @app.get("/recordings/{recording_id}", response_model=RecordingDetail)
@@ -524,6 +550,7 @@ def recordings_get(recording_id: int) -> RecordingDetail:
     return RecordingDetail(
         recording=rec,
         frames_dir=str(recordings_dir() / str(recording_id)),
+        disk_size_bytes=_recording_disk_size_bytes(recording_id),
     )
 
 
