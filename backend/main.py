@@ -35,6 +35,14 @@ from recording.errors import RecorderBusyError, RecorderError, RecorderPermissio
 from recording.factory import get_recorder
 from session.base import SessionState
 from session.engine import SessionAlreadyRunningError, SessionEngine
+from strategist.base import HierarchicalState, Intention
+from strategist.engine import HierarchicalEngine
+from strategist.errors import (
+    HSessionAlreadyRunningError,
+    MotorNotTrainedError,
+    StrategistError,
+)
+from strategist.vlm_strategist import VLMStrategist
 from training.base import TrainConfig
 from training.errors import TrainerBusyError, TrainerError
 from training.trainer import Trainer
@@ -107,6 +115,7 @@ _engine = SessionEngine(_capture, _planner, _executor)
 _recorder = get_recorder(_capture)
 _trainer = Trainer()
 _motor = get_motor()
+_hengine = HierarchicalEngine(_capture, _motor, _executor, VLMStrategist(_vlm))
 
 DEFAULT_DESCRIBE_PROMPT = (
     "Descreva em português o que está acontecendo nesta tela. "
@@ -723,6 +732,157 @@ class MotorPrediction(BaseModel):
     click_right: bool
     latency_ms: float
     raw_logits: list[float]
+
+
+# --- /hsession (M7 loop hierárquico) ----------------------------------------
+
+
+class StartHSessionRequest(BaseModel):
+    game_id: str = Field(min_length=1)
+    region: list[int] | None = Field(
+        default=None,
+        description="Recorte [x, y, largura, altura]. None = tela inteira.",
+    )
+    max_duration_s: int = Field(default=300, ge=1, le=86_400)
+    target_fps: int = Field(default=30, ge=1, le=60)
+    acknowledge_ban_risk: str | None = Field(
+        default=None,
+        description=(
+            "Frase 'estou ciente do risco' libera sessão em jogos com "
+            "anti_cheat != none."
+        ),
+    )
+
+    @field_validator("region")
+    @classmethod
+    def _validate_region(cls, v: list[int] | None) -> list[int] | None:
+        if v is None:
+            return None
+        if len(v) != 4:
+            raise ValueError("region deve ter 4 inteiros: [x, y, largura, altura]")
+        x, y, w, h = v
+        if w <= 0 or h <= 0:
+            raise ValueError("região com largura/altura <= 0 é inválida")
+        if x < 0 or y < 0:
+            raise ValueError("região com x/y negativos é inválida")
+        return v
+
+
+class IntentionResponse(BaseModel):
+    text: str
+    params: dict[str, Any] = Field(default_factory=dict)
+    issued_at: datetime
+    ttl_s: float
+
+
+class HSessionStateResponse(BaseModel):
+    status: str
+    game: str | None = None
+    region: list[int] | None = None
+    motor_model_id: int | None = None
+    motor_accuracy: float | None = None
+    current_intention: IntentionResponse | None = None
+    intentions_history: list[IntentionResponse] = Field(default_factory=list)
+    actions_per_second: float = 0.0
+    total_actions: int = 0
+    last_frame_b64: str | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    stop_reason: str | None = None
+    error: str | None = None
+
+
+def _serialize_intention(it: Intention) -> IntentionResponse:
+    return IntentionResponse(
+        text=it.text,
+        params=it.params,
+        issued_at=it.issued_at,
+        ttl_s=it.ttl_s,
+    )
+
+
+def _serialize_hstate(s: HierarchicalState) -> HSessionStateResponse:
+    return HSessionStateResponse(
+        status=s.status,
+        game=s.game,
+        region=list(s.region) if s.region else None,
+        motor_model_id=s.motor_model_id,
+        motor_accuracy=s.motor_accuracy,
+        current_intention=(
+            _serialize_intention(s.current_intention)
+            if s.current_intention is not None
+            else None
+        ),
+        intentions_history=[_serialize_intention(i) for i in s.intentions_history],
+        actions_per_second=s.actions_per_second,
+        total_actions=s.total_actions,
+        last_frame_b64=s.last_frame_b64,
+        started_at=s.started_at,
+        finished_at=s.finished_at,
+        stop_reason=s.stop_reason,
+        error=s.error,
+    )
+
+
+@app.post("/hsession/start", response_model=HSessionStateResponse)
+async def hsession_start(body: StartHSessionRequest) -> HSessionStateResponse:
+    conn = get_connection()
+    game = games_repo.get(conn, body.game_id)
+    if game is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"jogo desconhecido: {body.game_id!r}",
+        )
+
+    if game.anti_cheat is not AntiCheat.NONE:
+        if body.acknowledge_ban_risk != ACK_BAN_RISK_TOKEN:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"ATENÇÃO: este jogo usa {game.anti_cheat.value}. "
+                    f"Automação detectada = ban. Envie acknowledge_ban_risk: "
+                    f"{ACK_BAN_RISK_TOKEN!r} no body se realmente quiser tentar."
+                ),
+            )
+        log.warning(
+            "hsession anti_cheat bypass aceito game=%s anti_cheat=%s",
+            game.id,
+            game.anti_cheat.value,
+        )
+
+    region = _region_tuple(body.region) if body.region else None
+    try:
+        state = await _hengine.start(
+            game_id=game.id,
+            goal=game.goal,
+            region=region,
+            max_duration_s=body.max_duration_s,
+            target_fps=body.target_fps,
+        )
+    except HSessionAlreadyRunningError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    except MotorNotTrainedError as e:
+        raise HTTPException(status_code=412, detail=str(e)) from e
+    except StrategistError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+    log.info(
+        "hsession/start game=%s region=%s target_fps=%d max_duration_s=%d",
+        body.game_id, body.region, body.target_fps, body.max_duration_s,
+    )
+    return _serialize_hstate(state)
+
+
+@app.post("/hsession/stop", response_model=HSessionStateResponse)
+async def hsession_stop() -> HSessionStateResponse:
+    state = await _hengine.stop()
+    log.info("hsession/stop")
+    return _serialize_hstate(state)
+
+
+@app.get("/hsession/status", response_model=HSessionStateResponse)
+def hsession_status() -> HSessionStateResponse:
+    return _serialize_hstate(_hengine.status())
 
 
 @app.get("/motor/test/{game_id}", response_model=MotorPrediction)

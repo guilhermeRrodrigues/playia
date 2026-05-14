@@ -196,6 +196,11 @@
 	}
 </script>
 
+<nav class="tabs">
+	<a href="/play" class="tab active" aria-current="page">Turn-based (M3)</a>
+	<a href="/play/hierarchical" class="tab">Hierárquico (M7)</a>
+</nav>
+
 <aside class="warning" role="alert">
 	<strong>Atenção:</strong> não use o PlayIA em jogos online com anti-cheat (Vanguard,
 	EAC, BattlEye, Hyperion). Single-player ou browser apenas. Mover o mouse para
@@ -395,6 +400,36 @@
 </main>
 
 <style>
+	.tabs {
+		display: flex;
+		gap: 0;
+		max-width: 960px;
+		margin: 0 auto;
+		padding: 0 1.5rem;
+		border-bottom: 1px solid #e5e7eb;
+	}
+
+	.tab {
+		padding: 0.65rem 1.1rem;
+		font-size: 0.9rem;
+		font-weight: 600;
+		color: #6b7280;
+		text-decoration: none;
+		border-bottom: 3px solid transparent;
+		transition:
+			color 120ms ease,
+			border-color 120ms ease;
+	}
+
+	.tab:hover {
+		color: #1f2937;
+	}
+
+	.tab.active {
+		color: #047857;
+		border-bottom-color: #047857;
+	}
+
 	.warning {
 		position: sticky;
 		top: 0;
