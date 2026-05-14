@@ -28,13 +28,15 @@ por usar este app fora do escopo acima.
 - **Marco 1**: "Hello world arquitetural". App Tauri 2 + sidecar
   Python FastAPI + captura de tela cross-platform funcionando ponta a
   ponta.
-- **Marco 2** (atual): A IA enxerga a tela. VLM local (Ollama +
-  `qwen2.5vl:3b`) descreve em português o que está acontecendo na
-  tela capturada. Continua stateless.
-- Próximos marcos (M3–M8): loop fechado num jogo simples, memória
-  episódica em SQLite-vec, skill curation, modo watch-me-play,
-  Settings + BYOK multi-provider, release v1.0 via GitHub Actions
-  com auto-update. Detalhes em `CLAUDE.md`.
+- **Marco 2**: A IA enxerga a tela. VLM local (Ollama + `qwen2.5vl:3b`)
+  descreve em português o que está acontecendo na tela capturada.
+- **Marco 3** (atual): Loop fechado captura → planner (VLM decide a
+  próxima tecla) → executor (pyautogui). Jogo alvo: **2048**
+  ([play2048.co](https://play2048.co/)). Rotas `/play` (controle da
+  sessão) e `/inspect` (debug do M2). Sem memória persistente ainda.
+- Próximos marcos (M4–M8): memória episódica em SQLite-vec, skill
+  curation, modo watch-me-play, Settings + BYOK multi-provider, release
+  v1.0 via GitHub Actions com auto-update. Detalhes em `CLAUDE.md`.
 
 ## Stack
 
@@ -154,39 +156,62 @@ alvo".
 ```
 playia/
 ├── src/                 # Frontend SvelteKit (TypeScript)
+│   ├── lib/http.ts      # BACKEND + humanizeError
 │   └── routes/
+│       ├── +page.svelte         # home (cards Play/Inspect)
+│       ├── inspect/+page.svelte # debug M2
+│       └── play/+page.svelte    # controle da sessão M3
 ├── src-tauri/           # Shell Rust + spawn do sidecar
 │   └── src/lib.rs
 ├── backend/             # Sidecar Python (FastAPI + uv)
 │   ├── main.py
-│   └── capture/         # Protocol + mss/dxcam implementations
+│   ├── capture/         # Protocol + mss/dxcam (com region)
+│   ├── vision/          # VLMProvider + OllamaProvider (M2)
+│   ├── executor/        # InputExecutor + pyautogui (M3)
+│   ├── planner/         # Planner + VLMPlanner + Action (M3)
+│   └── session/         # SessionEngine + games.py (M3)
 ├── CLAUDE.md            # Contexto e regras para o Claude Code
 └── README.md
 ```
 
-## Endpoints do sidecar (M1)
+## Endpoints do sidecar
 
 | Método | Path | Descrição |
 |---|---|---|
-| GET | `/health` | `{"ok": true}` |
-| POST | `/capture` | Devolve PNG do monitor primário |
+| GET  | `/health`          | `{"ok": true}` |
+| GET  | `/vlm/status`      | Health do VLM: `{ready, model, issue}`. |
+| POST | `/capture`         | PNG do monitor primário. Body opcional `{"region": [x,y,w,h]}`. |
+| POST | `/describe`        | Descrição em pt-br: `{description, latency_ms, model}`. Body opcional `{"prompt"?, "region"?}`. |
+| GET  | `/session/games`   | Catálogo `dict[str, GameProfile]` (hoje só 2048). |
+| POST | `/session/start`   | Inicia loop. Body: `{game, region?, max_actions, max_duration_s, step_delay_ms}`. |
+| POST | `/session/stop`    | Encerra loop em ≤1 ciclo. |
+| GET  | `/session/status`  | Snapshot `SessionState` (inclui `last_screenshot_b64`). |
 
-## Verificar M1 manualmente
+## Verificar manualmente
 
 ```sh
 # Terminal 1: subir só o backend (sem Tauri)
 cd backend && uv run python main.py
 
-# Terminal 2: testar
+# Terminal 2: testar M1+M2
 curl http://127.0.0.1:8765/health
 # {"ok":true}
 
 curl -X POST http://127.0.0.1:8765/capture --output /tmp/t.png
 file /tmp/t.png
 # /tmp/t.png: PNG image data, ...
+
+# Testar M3 (precisa de Ollama rodando + qwen2.5vl:3b baixado)
+curl http://127.0.0.1:8765/session/games
+curl -X POST http://127.0.0.1:8765/session/start \
+  -H 'Content-Type: application/json' \
+  -d '{"game":"2048","max_actions":3,"max_duration_s":120,"step_delay_ms":300}'
+curl http://127.0.0.1:8765/session/status
+curl -X POST http://127.0.0.1:8765/session/stop
 ```
 
-Ou: rodar `npm run tauri dev` na raiz e clicar em **"Capturar tela"**.
+Ou: rodar `npm run tauri dev` na raiz, abrir https://play2048.co/ em
+outra janela e usar a rota `/play`.
 
 ## Licença
 
