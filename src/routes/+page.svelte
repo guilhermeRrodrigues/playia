@@ -14,6 +14,11 @@
 			<p>Loop fechado: a IA vê a tela e joga sozinha um jogo simples (2048 no M3).</p>
 			<span class="cta">Iniciar →</span>
 		</a>
+		<a class="card games" href="/games">
+			<h2>Jogos</h2>
+			<p>Catálogo persistente. Tempo (turn-based / realtime) e flag de anti-cheat.</p>
+			<span class="cta">Abrir →</span>
+		</a>
 		<a class="card inspect" href="/inspect">
 			<h2>Inspect</h2>
 			<p>Capturar tela e pedir descrição em pt-br. Útil para debugar o VLM.</p>
@@ -22,7 +27,7 @@
 	</div>
 
 	<footer>
-		<small>M3 — loop fechado. Sem memória persistente ainda (M4).</small>
+		<small>M4 — memória SQLite persistente. Próximo: gravação de sessões (M5).</small>
 	</footer>
 </main>
 
@@ -62,8 +67,14 @@
 
 	.cards {
 		display: grid;
-		grid-template-columns: 1fr 1fr;
+		grid-template-columns: repeat(3, 1fr);
 		gap: 1rem;
+	}
+
+	@media (max-width: 900px) {
+		.cards {
+			grid-template-columns: 1fr 1fr;
+		}
 	}
 
 	@media (max-width: 640px) {
@@ -94,6 +105,10 @@
 
 	.card.play h2 {
 		color: #047857;
+	}
+
+	.card.games h2 {
+		color: #b45309;
 	}
 
 	.card.inspect h2 {
