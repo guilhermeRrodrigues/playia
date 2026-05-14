@@ -7,6 +7,8 @@ from io import BytesIO
 import mss
 from PIL import Image
 
+from .base import Region
+
 
 class MssCapture:
     """Captura o monitor primário e devolve PNG bytes.
@@ -18,9 +20,13 @@ class MssCapture:
     def __init__(self) -> None:
         self._sct = mss.mss()
 
-    def grab(self) -> bytes:
-        # mss numera monitores a partir de 1; índice 0 = "todos juntos".
-        monitor = self._sct.monitors[1]
+    def grab(self, region: Region | None = None) -> bytes:
+        if region is None:
+            # mss numera monitores a partir de 1; índice 0 = "todos juntos".
+            monitor = self._sct.monitors[1]
+        else:
+            x, y, w, h = region
+            monitor = {"left": x, "top": y, "width": w, "height": h}
         shot = self._sct.grab(monitor)
         img = Image.frombytes("RGB", shot.size, shot.rgb)
         buf = BytesIO()

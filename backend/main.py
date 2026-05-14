@@ -12,8 +12,9 @@ import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
+from capture.base import Region
 from capture.factory import get_capture
 from vision.errors import (
     VLMModelMissingError,
@@ -72,8 +73,53 @@ DEFAULT_DESCRIBE_PROMPT = (
 )
 
 
+class CaptureRequest(BaseModel):
+    region: list[int] | None = Field(
+        default=None,
+        description="Recorte [x, y, largura, altura]. None = tela inteira.",
+    )
+
+    @field_validator("region")
+    @classmethod
+    def _validate_region(cls, v: list[int] | None) -> list[int] | None:
+        if v is None:
+            return None
+        if len(v) != 4:
+            raise ValueError("region deve ter 4 inteiros: [x, y, largura, altura]")
+        x, y, w, h = v
+        if w <= 0 or h <= 0:
+            raise ValueError("região com largura/altura <= 0 é inválida")
+        if x < 0 or y < 0:
+            raise ValueError("região com x/y negativos é inválida")
+        return v
+
+
 class DescribeRequest(BaseModel):
     prompt: str | None = None
+    region: list[int] | None = Field(
+        default=None,
+        description="Recorte [x, y, largura, altura] para a VLM enxergar só uma parte da tela.",
+    )
+
+    @field_validator("region")
+    @classmethod
+    def _validate_region(cls, v: list[int] | None) -> list[int] | None:
+        if v is None:
+            return None
+        if len(v) != 4:
+            raise ValueError("region deve ter 4 inteiros: [x, y, largura, altura]")
+        x, y, w, h = v
+        if w <= 0 or h <= 0:
+            raise ValueError("região com largura/altura <= 0 é inválida")
+        if x < 0 or y < 0:
+            raise ValueError("região com x/y negativos é inválida")
+        return v
+
+
+def _region_tuple(req_region: list[int] | None) -> Region | None:
+    if req_region is None:
+        return None
+    return (req_region[0], req_region[1], req_region[2], req_region[3])
 
 
 class DescribeResponse(BaseModel):
@@ -100,9 +146,10 @@ async def vlm_status() -> VLMStatusResponse:
 
 
 @app.post("/capture")
-def capture() -> Response:
+def capture(body: CaptureRequest | None = None) -> Response:
+    region = _region_tuple(body.region) if body else None
     try:
-        png = _capture.grab()
+        png = _capture.grab(region)
     except Exception as e:
         log.exception("falha ao capturar tela")
         raise HTTPException(status_code=500, detail=str(e)) from e
@@ -112,8 +159,9 @@ def capture() -> Response:
 @app.post("/describe", response_model=DescribeResponse)
 async def describe(body: DescribeRequest | None = None) -> DescribeResponse:
     prompt = body.prompt if body and body.prompt else DEFAULT_DESCRIBE_PROMPT
+    region = _region_tuple(body.region) if body else None
     try:
-        png = _capture.grab()
+        png = _capture.grab(region)
     except Exception as e:
         log.exception("falha ao capturar tela")
         raise HTTPException(status_code=500, detail=str(e)) from e

@@ -11,6 +11,8 @@ from __future__ import annotations
 import sys
 from io import BytesIO
 
+from .base import Region
+
 try:
     import dxcam  # type: ignore[import-not-found]
 except ImportError:
@@ -27,9 +29,14 @@ class DxCamCapture:
         # `output_color="RGB"` devolve frame RGB pronto para PIL.
         self._camera = dxcam.create(output_color="RGB")
 
-    def grab(self) -> bytes:
+    def grab(self, region: Region | None = None) -> bytes:
+        # TODO(windows-only): suportar `region` no DxCam (passar tuple para
+        # `self._camera.grab(region=(left, top, right, bottom))`). Por enquanto
+        # ignoramos para não bloquear o M3 — validação em ambiente Windows
+        # real é responsabilidade do M8.
         from PIL import Image  # import tardio: evita custo no Mac
 
+        del region
         frame = self._camera.grab()
         if frame is None:
             # dxcam devolve None se o frame ainda não mudou; tentar de novo.
